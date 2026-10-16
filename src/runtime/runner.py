@@ -18,6 +18,7 @@ def codex_command(prompt,thread=None,*,event_wait=False):
             'mcp_servers.tulpa.disabled_tools': ['wait_chat_messages'],
             'mcp_servers.chat_wait.command': os.sys.executable,
             'mcp_servers.chat_wait.args': [str(Path(__file__).with_name('chat_wait_mcp.py')), '--thread', thread],
+            'mcp_servers.chat_wait.env_vars': ['CODEX_HOME'],
             'mcp_servers.chat_wait.tool_timeout_sec': 3660,
             'mcp_servers.chat_wait.tools.wait_chat_messages.approval_mode': 'approve',
         }
