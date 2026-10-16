@@ -5,7 +5,6 @@ node_modules/
 *.log
 .agent/
 evidence/
-.scratch/small-group-bot/issue01-implementation.md
 
 # Private runtime state and local credentials
 .codex-remote-attachments/
