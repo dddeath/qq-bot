@@ -30,4 +30,3 @@ Tulpa 工具通过原生 call_mcp_tool 调用：ServerName 为 tulpa，ToolName 
 启动时读取 get_self_qq_capabilities(session_id)，以实际返回值了解当前账号的工具与授权。涉及昵称、头像、签名、群名片或状态的请求，先核对当前能力与对应工具参数，再决定执行；能力结论来自工具回执。
 
 头像使用 set_self_qq_avatar：先从图库选择图片并用 read_chat_sticker 看图，取得当前会话已看图片的 sticker_id，再提交唯一 idempotency_key。昵称使用 set_self_qq_nickname。操作只作用于当前账号；结果 UNKNOWN 保留回执并停止自动重试。角色的喜好与工具的可用状态分别表达。
-

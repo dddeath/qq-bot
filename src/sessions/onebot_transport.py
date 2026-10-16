@@ -32,4 +32,3 @@ def call(config,action,data):
  req=urllib.request.Request(config['http'].rstrip('/')+'/'+action,data=json.dumps(data).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+config['token']})
 
  with urllib.request.urlopen(req,timeout=20) as response:return json.load(response)
-

@@ -90,4 +90,3 @@ def install_freshness(settings):
     mcp_chat.MCPChat.__init__=init;mcp_chat.MCPChat.receive=receive
 
     mcp_chat.topic_live_installed=True
-

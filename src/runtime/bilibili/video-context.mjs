@@ -61,4 +61,3 @@ export async function collectVideoContext(args,call){
  return {bvid,page,source_url:url,materials,missing,reading_policy,complete:false,text_materials_complete:missing.length===0,frames:{status:'not_requested',video:url,next_tools:['video_frames.watch_video','video_frames.sample_video_frames','video_frames.get_frames']}};
 
 }
-

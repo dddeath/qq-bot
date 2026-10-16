@@ -106,4 +106,3 @@ class CodexProvider:
                 raise RuntimeError('unexpected tool use in decision-only replay: '+str(run))
 
         return json.loads((run/'answer.json').read_text())
-

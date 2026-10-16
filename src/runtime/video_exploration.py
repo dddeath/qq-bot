@@ -201,4 +201,3 @@ def valid_action(action):
     if 'end_seconds' in action and action['end_seconds']<action.get('start_seconds',0):return False
 
     return True
-

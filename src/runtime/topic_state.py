@@ -18,4 +18,3 @@ def bounded(messages, limits, now):
     while len(kept) > limits.max_messages or sum(len(m['text']) for m in kept) > limits.max_total_chars:
         kept.pop(0)
     return kept
-
