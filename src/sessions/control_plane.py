@@ -152,6 +152,7 @@ class ControlPlane:
             servers[name]=cfg
         return dict(session_id=session_id,bot_ref=session['bot_ref'],tool_profile_ref=bot['tool_profile'],
                     servers=servers,unavailable=unavailable,persona_ref=bot.get('persona_ref'),
+                    activation=copy.deepcopy(bot.get('activation', {'enabled':False})),
                     applied=session.get('runtime_refs',{}).get('applied_configuration'))
 
     def export_tools(self, session_id, directory, *, python, proxy):

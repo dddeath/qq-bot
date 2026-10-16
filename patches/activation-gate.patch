@@ -1,0 +1,10 @@
+--- a/chatlocal/mcp_chat.py
++++ b/chatlocal/mcp_chat.py
+@@ -533,6 +533,7 @@
+                 with self.access.connect() as db:
+                     pending=db.execute('SELECT * FROM chat_inbox WHERE session_id=? AND id>? ORDER BY id LIMIT ?',
+                                        (sid,row['cursor'],limit+1)).fetchall()
++                pending=__import__("activation").select_pending(self,row,pending)
+                 consumed=self.consume_sent_echoes(row,pending)
+                 if consumed:
+                     echoes+=consumed
