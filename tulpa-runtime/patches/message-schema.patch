@@ -1,0 +1,32 @@
+diff --git a/chatlocal/mcp_chat_turns.py b/chatlocal/mcp_chat_turns.py
+index 2d802ae..0345107 100644
+--- a/chatlocal/mcp_chat_turns.py
++++ b/chatlocal/mcp_chat_turns.py
+@@ -48,13 +48,20 @@ def schema(tool):
+         '程序串行发送、气泡间留间隔并重新检查相关新消息/停止/授权。STALE 需补读重规划，已发不撤回，旧尾部不续发；UNKNOWN 禁止重试。'
+         '纯 reaction、纯表情包均可结束本轮，不必配文。',
+         dict(session_id=sid,plan_id=sid,idempotency_key=key,
+-             bubbles=dict(type='array',minItems=1,maxItems=3,items=dict(type='object',additionalProperties=False,
+-                properties=dict(kind=dict(type='string',enum=['text','sticker','reaction']),
+-                    text=dict(type='string',minLength=1,maxLength=4000),sticker_id=sid,
+-                    event_id=event,reaction_id=dict(type='string',maxLength=64),
+-                    operation=dict(type='string',enum=['add','remove']),
+-                    quote=dict(type='boolean'),mention_user_ids=dict(type='array',maxItems=5,uniqueItems=True,
+-                        items=dict(type='string',pattern='^[1-9][0-9]{0,19}$'))),required=['kind']))),
++             bubbles=dict(type='array',minItems=1,maxItems=3,items=dict(oneOf=[
++                dict(type='object',additionalProperties=False,
++                     description='文字：目标在 plan_chat_reply.target_event_id 指定；此处不要传 event_id。',
++                     properties=dict(kind=dict(type='string',enum=['text']),text=dict(type='string',minLength=1,maxLength=4000),
++                        quote=dict(type='boolean'),mention_user_ids=dict(type='array',maxItems=5,uniqueItems=True,
++                            items=dict(type='string',pattern='^[1-9][0-9]{0,19}$'))),required=['kind','text']),
++                dict(type='object',additionalProperties=False,
++                     description='图片或表情包：只传已读取的 sticker_id。',
++                     properties=dict(kind=dict(type='string',enum=['sticker']),sticker_id=sid),required=['kind','sticker_id']),
++                dict(type='object',additionalProperties=False,
++                     description='消息表情回应：event_id 仅属于此类型。',
++                     properties=dict(kind=dict(type='string',enum=['reaction']),event_id=event,
++                        reaction_id=dict(type='string',maxLength=64),operation=dict(type='string',enum=['add','remove'])),
++                     required=['kind','event_id','reaction_id','operation'])]))),
+         ['session_id','plan_id','bubbles'])]
+ 
+ 

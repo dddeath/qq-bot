@@ -1,0 +1,17 @@
+--- a/chatlocal/mcp_chat.py
++++ b/chatlocal/mcp_chat.py
+@@ -338,6 +338,14 @@
+                     from .mcp_chat_media import image_ref
+                     parts.append('[图片]');segments.append(dict(type='image',image_index=len(media)))
+                     media.append(image_ref(data))
++                elif kind in ('json','share'):
++                    from .mcp_shared_cards import shared_card
++                    card=shared_card(kind,data)
++                    if card:
++                        parts.append('[分享] '+ ' '.join(value for value in (card['title'],card['description'],card['url']) if value))
++                        segments.append(card)
++                    else:
++                        parts.append('[分享卡片]');segments.append(dict(type='share',unparsed=True))
+                 else:
+                     label={'image':'图片','record':'语音','video':'视频','file':'文件','face':'表情','forward':'合并转发'}.get(kind,'非文本消息')
+                     parts.append('['+label+']');segments.append(dict(type=label))

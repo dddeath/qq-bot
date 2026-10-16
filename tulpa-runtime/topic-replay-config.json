@@ -1,0 +1,12 @@
+{
+  "group_limits": {"max_messages": 200, "max_age_seconds": 1800, "max_total_chars": 24000},
+  "topic_limits": {"max_messages": 50, "max_age_seconds": 1200, "max_total_chars": 8000},
+  "message_chars": 2000,
+  "max_topics": 5,
+  "idle_seconds": 600,
+  "stale_grace_seconds": 45,
+  "participation_probability": 0.15,
+  "mention_reply_probability": 1.0,
+  "context_reply_probability": 1.0,
+  "bot_id": "1000000011"
+}

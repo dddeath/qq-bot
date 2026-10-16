@@ -1,0 +1,95 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "expressions",
+    "meanings"
+  ],
+  "properties": {
+    "expressions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "situation",
+          "surface_form",
+          "style",
+          "evidence_quote",
+          "source_ids",
+          "assessment"
+        ],
+        "properties": {
+          "situation": {
+            "type": "string"
+          },
+          "surface_form": {
+            "type": "string"
+          },
+          "style": {
+            "type": "string"
+          },
+          "evidence_quote": {
+            "type": "string"
+          },
+          "source_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "assessment": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "meanings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "term",
+          "meaning",
+          "usage",
+          "conditions",
+          "kind",
+          "source_ids",
+          "assessment"
+        ],
+        "properties": {
+          "term": {
+            "type": "string"
+          },
+          "meaning": {
+            "type": "string"
+          },
+          "usage": {
+            "type": "string"
+          },
+          "conditions": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "group",
+              "community",
+              "fact"
+            ]
+          },
+          "source_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "assessment": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

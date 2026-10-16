@@ -1,0 +1,207 @@
+--- /dev/null
++++ b/chatlocal/mcp_self_qq.py
+@@ -0,0 +1,100 @@
++"""Explicitly enabled self-account QQ tools, bound to an active chat."""
++import base64,hashlib,json,time
++from .onebot import OneBotError,OneBotUncertain
++
++WRITES={'set_self_qq_nickname':'set_qq_profile','set_self_qq_signature':'set_self_longnick','set_self_qq_group_card':'set_group_card','set_self_qq_status':'set_diy_online_status','set_self_qq_avatar':'set_qq_avatar','poke_chat_member':'group_poke'}
++SELF_TOOLS={'get_self_qq_capabilities','get_self_qq_profile',*WRITES}
++
++def schemas(tool):
++    sid={'session_id':{'type':'string','minLength':32,'maxLength':32}}
++    key={'idempotency_key':{'type':'string','minLength':8,'maxLength':80}}
++    rows=[tool('get_self_qq_capabilities','查询此账号自主交互能力及操作边界。',sid,['session_id']),
++            tool('get_self_qq_profile','读取当前账号资料及当前群自己的名片。',sid,['session_id']),
++            tool('set_self_qq_nickname','自主修改当前登录账号昵称；同次操作沿用幂等编号，UNKNOWN 不重试。',dict(**sid,**key,nickname={'type':'string','minLength':1,'maxLength':60}),['session_id','idempotency_key','nickname'])]
++    for name,field,limit,description in [('set_self_qq_signature','signature',200,'自主设置自己的个性签名。'),('set_self_qq_group_card','card',60,'自主设置当前群内自己的群名片，不操作他人。')]:
++        rows.append(tool(name,description+'同次操作沿用幂等编号，UNKNOWN 不重试。',dict(**sid,**key,**{field:dict(type='string',maxLength=limit)}),['session_id','idempotency_key',field]))
++    rows.append(tool('set_self_qq_status','设置自己的自定义在线状态，face_id 使用已知 QQ 图标编号，不猜测编号。',dict(**sid,**key,wording=dict(type='string',maxLength=60),face_id=dict(type='string',pattern='^[0-9]{1,12}$'),face_type=dict(type='string',pattern='^[0-9]{1,12}$',default='1')),['session_id','idempotency_key','wording','face_id']))
++    rows.append(tool('set_self_qq_avatar','自主修改自己头像，只接受本会话已看过的图库图片编号。按自己的审美选择，背景、文字或其他角色不自动排除，两张已标注票券不作头像；UNKNOWN 不重试。',dict(**sid,**key,sticker_id=dict(type='string',minLength=32,maxLength=32)),['session_id','idempotency_key','sticker_id']))
++    rows.append(tool('poke_chat_member','戳当前群中一条已交付事件的发起人。event_id 来自 wait/get 返回，可用于回应戳一戳；不连续互戳刷屏，UNKNOWN 不重试。',dict(**sid,**key,event_id=dict(type='integer',minimum=1)),['session_id','idempotency_key','event_id']))
++    return rows
++
++def enabled(chat,grant):
++    try:cfg=json.loads((chat.access.path.parent/'mcp-self-qq.json').read_text())
++    except (OSError,ValueError):return False
++    return bool(cfg.get('enabled') and grant['id'] in cfg.get('grant_ids',[]) and grant['scope'].get('chat') and grant['scope'].get('send'))
++
++class SelfQQ:
++    def __init__(self,chat):
++        self.chat=chat;self.access=chat.access
++        with self.access.connect() as db:
++            db.execute('CREATE TABLE IF NOT EXISTS self_qq_operations (grant_id TEXT, account TEXT, key TEXT, signature TEXT, action TEXT, state TEXT, receipt TEXT, before_json TEXT, created REAL, PRIMARY KEY(grant_id,account,key))')
++
++    def guard(self,grant,args,cancel):
++        current,row=self.chat.validate(args['session_id'],grant['id'])
++        if not enabled(self.chat,current):raise ValueError('当前连接未开放账号自主交互。')
++        cfg=json.loads((self.access.path.parent/'mcp-self-qq.json').read_text())
++        if row['conversation_id'] not in cfg.get('conversation_ids',[]):raise ValueError('当前群未开放账号自主交互。')
++        if cancel.is_set():raise ValueError('调用已取消。')
++        client=self.chat.actions.client_factory();account,_,group=row['conversation_id'].split(':')
++        if client.login()!=account:raise ValueError('登录账号与授权账号不一致。')
++        return current,row,client,account,group
++
++    def profile(self,client,account,group):
++        login=client.call('get_login_info',{})
++        detail=client.call('get_stranger_info',{'user_id':int(account),'no_cache':True})
++        member=client.call('get_group_member_info',{'group_id':int(group),'user_id':int(account),'no_cache':True})
++        return dict(account=account,nickname=login.get('nickname'),signature=detail.get('long_nick',detail.get('longNick',detail.get('personal_note'))),group_id=group,group_card=member.get('card'),avatar_url=detail.get('avatar_url'),online_status={k:detail.get(k) for k in ('status','extStatus','customStatus','customStatusDescInfo','iconType')},observed_at=time.time())
++
++    def payload(self,name,args,row,client,account,group,cancel):
++        if name=='set_self_qq_nickname':return {'nickname':args['nickname']}
++        if name=='set_self_qq_signature':return {'longNick':args['signature']}
++        if name=='set_self_qq_group_card':return {'group_id':int(group),'user_id':int(account),'card':args['card']}
++        if name=='set_self_qq_status':return {'wording':args['wording'],'face_id':args['face_id'],'face_type':args.get('face_type','1')}
++        if name=='set_self_qq_avatar':
++            media=self.chat.media;asset=media.asset(row['id'],args['sticker_id'])
++            if not asset['seen']:raise ValueError('先读取头像图片。')
++            raw=media.bytes(row,asset,cancel)
++            if hashlib.sha256(raw).hexdigest()!=asset['digest']:raise ValueError('图片已变化，请重新看图。')
++            return {'file':'base64://'+base64.b64encode(raw).decode('ascii')}
++        if name=='poke_chat_member':
++            eid=args['event_id']
++            with self.access.connect() as db:found=db.execute('SELECT payload FROM chat_inbox WHERE id=? AND session_id=? AND delivered=1',(eid,row['id'])).fetchone()
++            payload=json.loads(found[0]) if found else {};uid=str(payload.get('sender_id',''))
++            if not uid.isdecimal() or uid==account:raise ValueError('没有可用的本群戳一戳对象。')
++            member=client.call('get_group_member_info',{'group_id':int(group),'user_id':int(uid),'no_cache':True})
++            if str(member.get('user_id'))!=uid:raise ValueError('未核实目标为当前群成员。')
++            return {'group_id':int(group),'user_id':int(uid)}
++        raise ValueError('未知操作。')
++
++    def call(self,grant,name,args,cancel):
++        grant,row,client,account,group=self.guard(grant,args,cancel)
++        if name=='get_self_qq_capabilities':return dict(tools=sorted(SELF_TOOLS),account=account,group_id=group,autonomous_profile_changes=True,note='头像须先看图；群名片仅自己；戳一戳仅本群。UNKNOWN 不自动重试。')
++        if name=='get_self_qq_profile':return self.profile(client,account,group)
++        action=WRITES[name];key=args['idempotency_key'];signature=json.dumps({k:v for k,v in args.items() if k not in ('session_id','idempotency_key')},sort_keys=True,ensure_ascii=False)+name
++        with self.access.connect() as db:
++            old=db.execute('SELECT * FROM self_qq_operations WHERE grant_id=? AND account=? AND key=?',(grant['id'],account,key)).fetchone()
++            if old:
++                if old['signature']!=signature:raise ValueError('同一幂等编号对应不同操作。')
++                return json.loads(old['receipt'])
++        payload=self.payload(name,args,row,client,account,group,cancel)
++        before=self.profile(client,account,group)
++        pending=dict(state='UNKNOWN',action=action,idempotency_key=key,note='操作已预留，结果尚未确认，不重试。')
++        with self.access.connect() as db:
++            db.execute('BEGIN IMMEDIATE')
++            uncertain=db.execute('SELECT receipt FROM self_qq_operations WHERE grant_id=? AND account=? AND signature=? AND state=?',(grant['id'],account,signature,'UNKNOWN')).fetchone()
++            if uncertain:return json.loads(uncertain[0])
++            old=db.execute('SELECT signature,receipt FROM self_qq_operations WHERE grant_id=? AND account=? AND key=?',(grant['id'],account,key)).fetchone()
++            if old:
++                if old['signature']!=signature:raise ValueError('同一幂等编号对应不同操作。')
++                return json.loads(old['receipt'])
++            db.execute('INSERT INTO self_qq_operations VALUES(?,?,?,?,?,?,?,?,?)',(grant['id'],account,key,signature,action,'UNKNOWN',json.dumps(pending),json.dumps(before,ensure_ascii=False),time.time()))
++        try:
++            self.guard(grant,args,cancel)
++            data=client.call(action,payload,approved=True)
++            if isinstance(data,dict) and data.get('result',0) not in (0,'0',None):raise OneBotError('QQ 返回操作失败。')
++            result=dict(state='SUCCEEDED',action=action,idempotency_key=key,receipt=data,before=before)
++        except OneBotUncertain:result=pending
++        except (OneBotError,ValueError) as e:result=dict(state='FAILED',action=action,idempotency_key=key,error=str(e))
++        except Exception:result=pending
++        with self.access.connect() as db:db.execute('UPDATE self_qq_operations SET state=?,receipt=? WHERE grant_id=? AND account=? AND key=?',(result['state'],json.dumps(result,ensure_ascii=False),grant['id'],account,key))
++        return result
+--- a/chatlocal/mcp_tools.py
++++ b/chatlocal/mcp_tools.py
+@@ -19,6 +19,7 @@
+ from .mcp_access import RateLimited
+ from .mcp_chat import MCPChat, CHAT_TOOLS
+ from .mcp_chat_media import MEDIA_TOOLS, MEDIA_WRITES, schemas as media_schemas
++from .mcp_self_qq import SelfQQ, SELF_TOOLS, schemas as self_schemas, enabled as self_enabled
+ from .mcp_reactions import TOOL as REACTION_TOOL, schema as reaction_schema, ChatReactions
+ from .retrieval import scope_sql
+ 
+@@ -84,6 +85,7 @@
+         from .mcp_actions import MCPActions
+         self.actions = MCPActions(access)
+         self.chat = MCPChat(access, self.actions)
++        self.self_qq = SelfQQ(self.chat)
+         self.slots = threading.BoundedSemaphore(4)
+         self.chat_slots = threading.BoundedSemaphore(8)
+         self.qq_lock = threading.Lock()
+@@ -141,6 +143,7 @@
+             from .mcp_chat import schemas as chat_schemas
+             rows += chat_schemas(tool)
+             rows += media_schemas(tool, grant['scope'])
++            if self_enabled(self.chat,grant):rows += self_schemas(tool)
+             if grant['scope'].get('chat_reactions') and self.chat.reactions.policy()['enabled']:
+                 rows.append(reaction_schema(tool,self.chat.reactions.policy()['candidates']))
+         rows.append(tool('read_message', '按字符分页读一条允许范围内的原始消息，适合被搜索结果截断的长消息。',
+@@ -167,8 +170,10 @@
+         return rows
+ 
+     def call(self, token, name, arguments, cancel, source_base=''):
+-        grant = self.access.authorize(token, source=name not in CHAT_TOOLS and name not in MEDIA_TOOLS)
+-        if name in MEDIA_TOOLS:
++        grant = self.access.authorize(token, source=name not in CHAT_TOOLS and name not in MEDIA_TOOLS and name not in SELF_TOOLS)
++        if name in SELF_TOOLS:
++            rows = self_schemas(tool) if self_enabled(self.chat,grant) else []
++        elif name in MEDIA_TOOLS:
+             rows = media_schemas(tool, grant['scope'])
+         elif name in CHAT_TOOLS:
+             # A stalled OneBot health probe must never delay stop/status/wait.
+@@ -193,6 +198,9 @@
+             return self.result(dict(error='参数不符合工具格式；按字段提示修正，不要原样反复调用。',
+                 error_code='invalid_arguments',argument_errors=problems,
+                 recovery=dict(action='correct_arguments',executed=False,repeat_unchanged=False)))
++        if name in SELF_TOOLS:
++            try:return self.result(self.self_qq.call(grant,name,arguments,cancel))
++            except (ValueError,OSError,RuntimeError):return self.result(dict(error='QQ 自主交互未完成，请核对账号、会话、参数和权限。',error_code='self_qq_rejected'))
+         if name in CHAT_TOOLS:
+             return self.chat_call(grant, token, name, arguments, cancel)
+         if name in MEDIA_TOOLS:
+--- a/chatlocal/mcp_chat.py
++++ b/chatlocal/mcp_chat.py
+@@ -288,6 +288,13 @@
+                 db.execute('UPDATE chat_inbox SET payload=? WHERE id=?',(json.dumps(payload,ensure_ascii=False),found['id']))
+ 
+     def receive(self, event, *, send_request=None):
++        if event.get('post_type')=='notice' and event.get('notice_type')=='notify' and event.get('sub_type')=='poke':
++            account=str(event.get('self_id',''));actor=str(event.get('user_id',''));target=str(event.get('target_id',''))
++            if not account.isdecimal() or target!=account or not actor.isdecimal() or actor==account:return
++            stamp=event.get('time')
++            if type(stamp) not in (int,float):return
++            identity=json.dumps([account,event.get('group_id'),actor,target,stamp,event.get('raw_info')],sort_keys=True,ensure_ascii=False)
++            event=dict(event,post_type='message',message_type='group',message_id='poke:'+hashlib.sha256(identity.encode()).hexdigest()[:40],message=[dict(type='text',data=dict(text=actor+' 戳了你'))],_qq_poke=True)
+         if self.available and event.get('post_type')=='notice' and event.get('notice_type')=='group_msg_emoji_like':
+             self.reactions.receive(event);return
+         if self.available and event.get('post_type')=='notice' and event.get('notice_type')=='group_recall':
+@@ -340,6 +347,8 @@
+                      sender=str(sender.get('card') or sender.get('nickname') or uid)[:200],
+                      timestamp=timestamp,received_at=time.time(),is_self=uid==account,content=content[:12000],
+                      truncated=len(content)>12000,segments=segments[:100])
++        if event.get('_qq_poke'):
++            payload.update(notice_type='poke',poke_target_id=account,onebot_message_id='',source='onebot_notice')
+         payload['reaction_epoch']=self.reactions.epoch
+         payload['synthetic']=any(bool(event.get(k)) for k in ('virtual','is_notify','is_system','synthetic'))
+         if type(event.get('message_seq')) is int and event['message_seq']>0:
+@@ -572,7 +581,12 @@
+         if not found:raise ValueError('回应目标必须是本会话已读取且仍在缓存的事件 id，不能使用 M 编号或 OneBot 编号；未发送。')
+         payload=json.loads(found['payload'])
+         if payload.get('recalled'):raise ValueError('回应目标已撤回，未发送。请重新判断当前话题。')
+-        if (payload.get('conversation_id')!=row['conversation_id'] or payload.get('onebot_message_id')!=found['message_id']
++        poke = (payload.get('source')=='onebot_notice' and payload.get('notice_type')=='poke'
++                and payload.get('poke_target_id')==row['conversation_id'].split(':')[0]
++                and payload.get('onebot_message_id')=='' and found['message_id'].startswith('poke:')
++                and len(found['message_id'])==45
++                and all(c in '0123456789abcdef' for c in found['message_id'][5:]))
++        if (payload.get('conversation_id')!=row['conversation_id'] or (not poke and payload.get('onebot_message_id')!=found['message_id'])
+                 or type(payload.get('timestamp')) is not int or payload['timestamp']<=0
+                 or not isinstance(payload.get('sender_id'),str) or not payload['sender_id'].isascii()
+                 or not payload['sender_id'].isdigit() or int(payload['sender_id'])<=0):
+--- a/chatlocal/onebot.py
++++ b/chatlocal/onebot.py
+@@ -21,11 +21,11 @@
+     pass
+ 
+ 
+-READS = frozenset(('get_login_info', 'get_version_info', 'get_group_info', 'get_group_list',
++READS = frozenset(('get_login_info', 'get_stranger_info', 'nc_get_user_status', 'get_version_info', 'get_group_info', 'get_group_list',
+     'get_group_member_info', 'get_group_member_list', 'get_group_system_msg',
+     '_get_group_notice', 'get_essence_msg_list', 'get_group_file_system_info',
+     'get_group_root_files', 'get_group_files_by_folder', 'get_group_file_url', 'get_image', 'fetch_custom_face_detail'))
+-WRITES = frozenset(('set_group_ban', 'set_group_kick', 'set_group_name', 'set_group_add_request', 'add_custom_face', 'set_msg_emoji_like'))
++WRITES = frozenset(('set_qq_avatar', 'set_qq_profile', 'set_self_longnick', 'set_group_card', 'set_diy_online_status', 'group_poke', 'set_group_ban', 'set_group_kick', 'set_group_name', 'set_group_add_request', 'add_custom_face', 'set_msg_emoji_like'))
+ 
+ 
+ def configuration(root=None):

@@ -1,0 +1,19 @@
+--- a/chatlocal/mcp_chat_media.py
++++ b/chatlocal/mcp_chat_media.py
+@@ -356,6 +356,16 @@
+             if file.parent!=root or not file.is_file():continue
+             if file.suffix.lower() not in ('.png','.jpg','.jpeg','.gif','.webp'):continue
+             entries.append((entry,file))
++        generated=config.get('generated_directory')
++        if generated:
++            generated=Path(generated).resolve()
++            if generated.is_dir():
++                for file in sorted(generated.glob('*/*.png')):
++                    resolved=file.resolve()
++                    if not resolved.is_relative_to(generated) or not resolved.is_file():continue
++                    name='generated-'+file.parent.name+'-'+file.name
++                    entries.append((dict(file=name,description='Codex 生成图片 '+file.parent.name+'/'+file.name,
++                                         tags=['生成','generated']),resolved))
+         return entries
+ 
+     def community_list(self, row, args):

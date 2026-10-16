@@ -1,0 +1,24 @@
+.local/
+/key/
+.tools/
+node_modules/
+*.log
+.agent/
+evidence/
+.scratch/small-group-bot/issue01-implementation.md
+
+# Private runtime state and local credentials
+.codex-remote-attachments/
+.claude/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+auth.json
+*.pem
+*.key
+*.db
+*.sqlite*

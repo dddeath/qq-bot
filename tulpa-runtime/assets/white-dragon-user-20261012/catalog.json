@@ -1,0 +1,199 @@
+{
+  "default_identity_reference": "dragon-three-view-1000059549.jpg",
+  "default_style_reference": null,
+  "pixel_style_reference": "dragon-pixel-1000059545.jpg",
+  "items": [
+    {
+      "file": "dragon-portrait-1000059546.png",
+      "description": "白龙娘银白长发、白色龙角、紫眼、白紫服装的站姿人物图。可作自身形象展示素材；尚未选为默认角色或画风基准。",
+      "tags": [
+        "白龙娘",
+        "GPT",
+        "形象",
+        "站姿"
+      ],
+      "original": "1-1000059546.png",
+      "bytes": 2179570,
+      "size": [
+        1086,
+        1448
+      ],
+      "mode": "RGBA",
+      "alpha": true
+    },
+    {
+      "file": "dragon-pixel-1000059545.jpg",
+      "description": "白龙娘像素风头像，深紫像素轮廓、分块明暗、白与淡紫人物配色、暖黄色背景。用户指定的像素画风参考；仅在像素风创作时参考画风，不自动固定背景、构图或默认角色形象。 生成像素风白龙娘时与默认三视图一起传给生图工具；原图路径 /home/ubuntu/tulpa-test/assets/white-dragon-user-20261012/dragon-pixel-1000059545.jpg。",
+      "tags": [
+        "白龙娘",
+        "GPT",
+        "像素",
+        "画风参考",
+        "头像"
+      ],
+      "original": "2-1000059545.jpg",
+      "bytes": 193689,
+      "size": [
+        1280,
+        1280
+      ],
+      "mode": "RGB",
+      "alpha": false
+    },
+    {
+      "file": "dragon-sleep-1000059542.png",
+      "description": "Q版白龙娘闭眼趴在蜷曲龙尾上睡觉。用于睡觉、晚安、休息、安静陪伴。普通图库素材，非默认基准。",
+      "tags": [
+        "白龙娘",
+        "GPT",
+        "睡觉",
+        "晚安"
+      ],
+      "original": "3-1000059542.png",
+      "bytes": 1536155,
+      "size": [
+        1568,
+        1003
+      ],
+      "mode": "RGBA",
+      "alpha": true
+    },
+    {
+      "file": "dragon-tail-hug-1000059543.png",
+      "description": "Q版白龙娘半睁眼抱着龙尾，略显困倦或无奈。用于抱尾巴、困倦、无语、等待。普通图库素材，非默认基准。",
+      "tags": [
+        "白龙娘",
+        "GPT",
+        "抱尾巴",
+        "无语",
+        "困倦"
+      ],
+      "original": "4-1000059543.png",
+      "bytes": 1665676,
+      "size": [
+        1254,
+        1254
+      ],
+      "mode": "RGBA",
+      "alpha": true
+    },
+    {
+      "file": "dragon-yawn-1000059544.png",
+      "description": "Q版白龙娘揉眼打哈欠，龙尾蜷在身旁。用于困了、刚睡醒、打哈欠。普通图库素材，非默认基准。",
+      "tags": [
+        "白龙娘",
+        "GPT",
+        "打哈欠",
+        "刚醒",
+        "困了"
+      ],
+      "original": "5-1000059544.png",
+      "bytes": 1500405,
+      "size": [
+        1568,
+        1003
+      ],
+      "mode": "RGBA",
+      "alpha": true
+    },
+    {
+      "file": "dragon-soft-portrait-1000059547.jpg",
+      "description": "白龙娘柔光人物图，银白长发、紫眼、白角、淡紫龙翼，白紫服装与室内暖光背景。用于自身形象展示；普通图库素材，未选为默认角色或画风基准。",
+      "tags": [
+        "白龙娘",
+        "GPT",
+        "形象",
+        "柔光",
+        "龙翼"
+      ],
+      "original": "1-1000059547.jpg",
+      "bytes": 137786,
+      "size": [
+        960,
+        1280
+      ],
+      "mode": "RGB",
+      "alpha": false
+    },
+    {
+      "file": "dragon-eating-1000059541.png",
+      "description": "Q版白龙娘端碗用筷子吃米饭，脸颊鼓起。用于吃饭、饿了、开饭、吃饱。普通图库素材，非默认基准。",
+      "tags": [
+        "白龙娘",
+        "GPT",
+        "吃饭",
+        "饿了",
+        "开饭"
+      ],
+      "original": "2-1000059541.png",
+      "bytes": 1643163,
+      "size": [
+        1254,
+        1254
+      ],
+      "mode": "RGBA",
+      "alpha": true
+    },
+    {
+      "file": "dragon-waiting-1000059540.png",
+      "description": "Q版白龙娘双手收在胸前，半睁眼安静坐着。用于等待、听你说、发呆、安静陪伴。普通图库素材，非默认基准。",
+      "tags": [
+        "白龙娘",
+        "GPT",
+        "等待",
+        "听你说",
+        "发呆"
+      ],
+      "original": "3-1000059540.png",
+      "bytes": 1361882,
+      "size": [
+        1254,
+        1254
+      ],
+      "mode": "RGBA",
+      "alpha": true
+    },
+    {
+      "file": "dragon-starry-1000059548.jpg",
+      "description": "白龙娘星空主题全身图，银白长发、白角、紫眼、龙翼和长尾，白裙配深紫金边外搭及星环装饰。用于形象展示与星空主题服装参考；该服装不作为默认服装。",
+      "tags": [
+        "白龙娘",
+        "GPT",
+        "形象",
+        "星空",
+        "服装"
+      ],
+      "original": "1-1000059548.jpg",
+      "bytes": 146366,
+      "size": [
+        720,
+        1280
+      ],
+      "mode": "RGB",
+      "alpha": false
+    },
+    {
+      "file": "dragon-three-view-1000059549.jpg",
+      "description": "白龙娘默认角色参考：正面、侧面、背面三视图。生成白龙娘时先读取本图并传给生图工具，保持银白长发、紫眼、白色龙角、发侧结花流苏、白淡紫裙装、龙翼与鳞片长尾。像素风另读 dragon-pixel-1000059545.jpg，仅取其像素画风。参考原图路径 /home/ubuntu/tulpa-test/assets/white-dragon-user-20261012/dragon-three-view-1000059549.jpg。",
+      "tags": [
+        "白龙娘",
+        "GPT",
+        "三视图",
+        "角色参考",
+        "正面",
+        "侧面",
+        "背面",
+        "默认角色参考"
+      ],
+      "original": "2-1000059549.jpg",
+      "bytes": 134608,
+      "size": [
+        1280,
+        720
+      ],
+      "mode": "RGB",
+      "alpha": false
+    }
+  ],
+  "character_structure_reference": "dragon-three-view-1000059549.jpg"
+}

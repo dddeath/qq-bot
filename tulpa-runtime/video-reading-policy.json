@@ -1,0 +1,13 @@
+{
+  "max_read_units": 10,
+  "exploration_budget_ratio": 0.2,
+  "timeout_seconds": 300,
+  "max_decisions": 12,
+  "comment_page_size": 10,
+  "max_grids": 2,
+  "max_segment_seconds": 12,
+  "max_frames_per_segment": 8,
+  "max_sampled_frames": 24,
+  "max_grid_reads": 1,
+  "max_chapter_reads": 2
+}

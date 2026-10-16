@@ -1,0 +1,117 @@
+{
+  "enabled": true,
+  "lookback_days": 7,
+  "per_account_limit": 2,
+  "max_pages": 1,
+  "latest_video_check_limit": 20,
+  "video_check_limit": 30,
+  "max_text_chars": 16000,
+  "request_timeout_seconds": 120,
+  "accounts": [
+    {
+      "name": "Apex唐老鸭",
+      "aliases": [
+        "资讯鸭先知"
+      ],
+      "uid": 16720943,
+      "category": "apex",
+      "enabled": true,
+      "match": "exact_nickname",
+      "source_url": "https://space.bilibili.com/16720943/"
+    },
+    {
+      "name": "龙哥哥今天又鸽了",
+      "aliases": [
+        "龙哥"
+      ],
+      "uid": 37804608,
+      "category": "arknights",
+      "enabled": true,
+      "match": "exact_nickname",
+      "source_url": "https://space.bilibili.com/37804608/"
+    },
+    {
+      "name": "魔法Zc目录",
+      "aliases": [
+        "ZC"
+      ],
+      "uid": 13164144,
+      "category": "arknights",
+      "enabled": true,
+      "match": "exact_nickname",
+      "source_url": "https://space.bilibili.com/13164144/"
+    },
+    {
+      "name": "新鲜辣酱",
+      "uid": 33548672,
+      "category": "apex",
+      "enabled": true,
+      "match": "exact_nickname",
+      "source_url": "https://space.bilibili.com/33548672/"
+    },
+    {
+      "name": "APEX脆皮鸭",
+      "uid": 450122070,
+      "category": "apex",
+      "enabled": true,
+      "match": "exact_nickname",
+      "source_url": "https://space.bilibili.com/450122070/"
+    },
+    {
+      "name": "21个切片",
+      "uid": 30101670,
+      "category": "apex",
+      "enabled": true,
+      "match": "exact_nickname",
+      "source_url": "https://space.bilibili.com/30101670/"
+    },
+    {
+      "name": "血狼破军",
+      "uid": 267766441,
+      "category": "arknights",
+      "enabled": true,
+      "match": "exact_nickname",
+      "source_url": "https://space.bilibili.com/267766441/"
+    },
+    {
+      "name": "里雪りあ",
+      "uid": 1684845011,
+      "category": "arknights",
+      "enabled": true,
+      "match": "exact_nickname",
+      "source_url": "https://space.bilibili.com/1684845011/"
+    },
+    {
+      "name": "金乌___",
+      "uid": 398933914,
+      "category": "arknights",
+      "enabled": true,
+      "match": "exact_nickname",
+      "source_url": "https://space.bilibili.com/398933914/"
+    },
+    {
+      "name": "泥萌都是托",
+      "uid": 4878173,
+      "category": "arknights",
+      "enabled": true,
+      "match": "exact_nickname",
+      "source_url": "https://space.bilibili.com/4878173/"
+    },
+    {
+      "name": "都市零协会",
+      "uid": 3632319835409017,
+      "category": "project-moon",
+      "enabled": true,
+      "match": "user_confirmed",
+      "source_url": "https://space.bilibili.com/3632319835409017/"
+    },
+    {
+      "name": "流丽哦",
+      "uid": 16149859,
+      "category": "project-moon",
+      "enabled": true,
+      "match": "exact_nickname",
+      "source_url": "https://space.bilibili.com/16149859/"
+    }
+  ]
+}

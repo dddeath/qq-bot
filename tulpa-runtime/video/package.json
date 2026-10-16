@@ -1,0 +1,7 @@
+{
+  "name": "qq-video-frames",
+  "private": true,
+  "type": "module",
+  "scripts": {"test": "node --test test/*.test.mjs", "start": "node server.mjs"},
+  "dependencies": {"@modelcontextprotocol/sdk": "1.32.1"}
+}

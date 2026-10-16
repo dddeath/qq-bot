@@ -1,0 +1,13 @@
+{
+  "name": "qq-bilibili-readonly",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@xzxzzx/bilibili-mcp": "1.14.2",
+    "fast-xml-parser": "5.11.2"
+  }
+}
