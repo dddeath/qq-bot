@@ -38,12 +38,13 @@ FRESHNESS_PROMPT='你仅维护QQ群消息的话题关联，结果只用于发送
 
 class CodexProvider:
 
-    def __init__(self, role, evidence_root, *, model=None, timeout_seconds=90):
+    def __init__(self, role, evidence_root, *, model=None, timeout_seconds=90, effort='low', fast=True):
 
-        if role!='freshness':raise ValueError('Only freshness topic association is supported')
+        if role not in ('freshness','screening'):raise ValueError('unknown decision role')
         self.role=role;self.root=Path(evidence_root).resolve();self.timeout=timeout_seconds
 
         self.model=model or 'gpt-6-luna'
+        self.effort=effort;self.fast=fast
 
 
 
@@ -54,18 +55,22 @@ class CodexProvider:
         write_json(run/'input.json',request)
 
         schema=FRESHNESS_SCHEMA
+        instruction=FRESHNESS_PROMPT
+        if self.role=='screening':
+            from screening import SCHEMA, PROMPT
+            schema=SCHEMA;instruction=PROMPT
 
         write_json(run/'schema.json',schema)
 
-        prompt=FRESHNESS_PROMPT+'\n数据：\n'+json.dumps(request,ensure_ascii=False)
+        prompt=instruction+'\n数据：\n'+json.dumps(request,ensure_ascii=False)
 
         home=Path(os.environ['CODEX_HOME'])
 
         config=tomllib.loads((home/'config.toml').read_text())
 
-        args=['codex','-a','never','-m',self.model,'-c','model_reasoning_effort="low"',
+        args=['codex','-a','never','-m',self.model,'-c','model_reasoning_effort='+json.dumps(self.effort),
 
-              '-c','service_tier="fast"','-c','web_search="disabled"','-c','features.image_generation=false']
+              '-c','service_tier='+json.dumps('fast' if self.fast else None),'-c','web_search="disabled"','-c','features.image_generation=false']
 
         for name in config.get('mcp_servers',{}):args+=['-c',f'mcp_servers.{name}.enabled=false']
 
@@ -89,7 +94,7 @@ class CodexProvider:
 
                 except subprocess.TimeoutExpired:os.killpg(p.pid,signal.SIGKILL);p.communicate()
 
-        write_json(run/'execution.json',dict(model=self.model,effort='low',command=args,exit_status=p.returncode,
+        write_json(run/'execution.json',dict(model=self.model,effort=self.effort,fast=self.fast,command=args,exit_status=p.returncode,
 
                    timeout=timeout,elapsed_s=round(time.monotonic()-start,4),mcp_disabled=list(config.get('mcp_servers',{}))))
 
@@ -105,4 +110,13 @@ class CodexProvider:
 
                 raise RuntimeError('unexpected tool use in decision-only replay: '+str(run))
 
-        return json.loads((run/'answer.json').read_text())
+        answer=json.loads((run/'answer.json').read_text())
+        if self.role=='screening':
+            answer['_evidence']=str(run)
+            answer['_native_session_id']=None;answer['_usage']=None
+            for line in (run/'stdout.jsonl').read_text().splitlines():
+                try:event=json.loads(line)
+                except ValueError:continue
+                if event.get('type')=='thread.started':answer['_native_session_id']=event.get('thread_id')
+                if event.get('usage'):answer['_usage']=event['usage']
+        return answer

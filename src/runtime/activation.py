@@ -53,8 +53,8 @@ class ActivationGate:
         if self.last_arrival is not None and now-self.last_arrival >= self.config['active_idle_timeout_seconds']:
             self.active = False
         valid = [m for m in messages if now-m['received_at'] < self.config['buffer_ttl_seconds'] and str(m.get('sender_id')) != self.account and not m.get('is_self')]
-        score = sum(self.weights[self.category(m)] for m in valid)
-        directed = next((self.directed(m) for m in valid if self.directed(m)), None)
+        score = sum(self.weights[self.category(m)] for m in valid if not m.get('_screened',False))
+        directed = next((self.directed(m) for m in valid if not m.get('_screened',False) and self.directed(m)), None)
         reason = 'disabled' if not self.config['enabled'] else directed or ('active' if self.active else 'threshold' if score >= self.config['threshold'] else 'buffering')
         activated = not self.active and reason in ('mention', 'reply', 'threshold')
         if activated: self.active = True
@@ -109,7 +109,22 @@ def select_pending(service, session, pending):
                     if found:
                         m['reply_sender_id'] = json.loads(found[0]).get('sender_id')
             messages.append(m)
-    selected = {m['id'] for m in router.select(cid,messages,time.time())}
+    now=time.time()
+    screened=0
+    if hasattr(service,'_screening_service') and cid in service._screening_service.queues:
+        screened=service._screening_service.queues[cid].state['screened']
+    gate_messages=[dict(m,_screened=m['id']<=screened) for m in messages]
+    gate_ids={m['id'] for m in router.select(cid,gate_messages,now)}
+    allowed=[m for m in messages if m['id'] in gate_ids]
+    if allowed and router.bots[cid.split(':')[0]].get('screening',{}).get('enabled',False):
+        if not hasattr(service,'_screening_service'):
+            from screening_service import ScreeningService
+            service._screening_service=ScreeningService(json.loads(Path(path).read_text(encoding='utf-8-sig')))
+        with service.access.connect() as db:
+            recent=db.execute('SELECT id,at,payload FROM chat_inbox WHERE session_id=? ORDER BY id DESC LIMIT 40',(session['id'],)).fetchall()
+        history=[dict(json.loads(r['payload']),id=r['id'],received_at=r['at']) for r in reversed(recent)]
+        allowed=service._screening_service.select(cid,allowed,history,now)
+    selected = {m['id'] for m in allowed}
     return [row for row in rows if row['id'] in selected]
 
 
@@ -121,7 +136,8 @@ def export_config(database, bot_id, version):
     with closing(sqlite3.connect(Path(database).resolve().as_uri()+'?mode=ro',uri=True)) as db:
         row=db.execute("SELECT body FROM configurations WHERE kind='bot' AND id=? AND version=?",(bot_id,version)).fetchone()
     if row is None: raise ValueError('unknown bot revision')
-    bot=json.loads(row[0]);config=bot.get('activation',{'enabled':False})
+    bot=json.loads(row[0]);config=dict(bot.get('activation',{'enabled':False}))
+    config.update(batching=bot.get('batching',{}),screening=bot.get('screening',{'enabled':False}))
     ActivationGate(config,account=bot['account_id'])
     return dict(bot_ref=dict(kind='bot',id=bot_id,version=version),bots={str(bot['account_id']):config})
 

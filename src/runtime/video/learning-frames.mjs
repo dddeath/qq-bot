@@ -37,7 +37,8 @@ export async function readLearningFrames({video,output,count=2,timeout_ms=180000
    const grids=kind==='chapter_grid'?1:count;
    const sampled=await invoke('sample_video_frames',{video,frame_count:grids*9,...(kind==='chapter_grid'?{start_seconds,end_seconds}:{}),timeout_ms:Math.max(1,Math.min(90000,Math.floor(timeout_ms-(now()-start))))});
    const meta=JSON.parse(sampled.content.find(x=>x.type==='text').text);
-   responses.push({response:await invoke('get_frames',{sample_id:meta.sample_id,kind:'grids',start:1,count:grids})});
+   const response=await invoke('get_frames',{sample_id:meta.sample_id,kind:'grids',start:1,count:grids});
+   responses.push({response:{...response,content:[...sampled.content.filter(x=>x.type==='text'),...response.content]}});
   }
   else for(const time of times){
    if(!Number.isFinite(time)||time<0||time>=86400)throw Error('invalid_frame_time');

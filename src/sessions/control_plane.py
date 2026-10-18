@@ -69,7 +69,7 @@ class ControlPlane:
 
     def bind(self, session_id, *, purpose, bot_ref=None, runtime_refs=None):
         s=self.sessions.get(session_id)
-        if purpose not in ('chat','learning','research'):raise ValueError('unknown purpose')
+        if purpose not in ('chat','learning','research','screening'):raise ValueError('unknown purpose')
         if bot_ref:
             if bot_ref.get('kind')!='bot':raise ValueError('bot reference required')
             if self.dereference(bot_ref)['body']['account_id']!=s.get('account_id'):raise ValueError('bot account mismatch')
@@ -153,6 +153,9 @@ class ControlPlane:
         return dict(session_id=session_id,bot_ref=session['bot_ref'],tool_profile_ref=bot['tool_profile'],
                     servers=servers,unavailable=unavailable,persona_ref=bot.get('persona_ref'),
                     activation=copy.deepcopy(bot.get('activation', {'enabled':False})),
+                    batching=copy.deepcopy(bot.get('batching', {})),
+                    screening=copy.deepcopy(bot.get('screening', {'enabled':False})),
+                    main_context=copy.deepcopy(bot.get('main_context', {})),
                     applied=session.get('runtime_refs',{}).get('applied_configuration'))
 
     def export_tools(self, session_id, directory, *, python, proxy):

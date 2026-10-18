@@ -4,12 +4,16 @@ from pathlib import Path
 
 MODEL='gpt-6.1-sol'
 EFFORT='low'
-SERVICE_TIER='fast'
+SERVICE_TIER=None
+CONTEXT_WINDOW=256000
 
-def codex_command(prompt,thread=None,*,event_wait=False):
+def codex_command(prompt,thread=None,*,event_wait=False,policy=None):
+    context=(policy or {}).get('main_context',{})
+    window=context.get('target_window',CONTEXT_WINDOW)
+    tier='fast' if context.get('fast',False) else None
     args=['-a','never','-m',MODEL,'-c','model_reasoning_effort="'+EFFORT+'"','exec','--skip-git-repo-check','--sandbox','read-only','--color','never','--json']
     if thread:args+=['resume',thread]
-    args[0:0]=['-c','service_tier='+json.dumps(SERVICE_TIER),'-c','web_search="live"','-c','features.image_generation=true']
+    args[0:0]=['-c','model_context_window='+str(window),'-c','model_auto_compact_token_limit='+str(int(window*.9)),'-c','service_tier='+json.dumps(tier),'-c','web_search="live"','-c','features.image_generation=true']
     if event_wait:
         if not thread:
             raise ValueError('event wait requires the existing native thread')
@@ -29,11 +33,11 @@ def codex_command(prompt,thread=None,*,event_wait=False):
     args.append(prompt)
     return ['bash','-lc','source "$HOME/.local/qq-bot-runtime/env.sh"; exec codex "$@"','live',*args]
 
-def run_chat(run,thread,*,event_wait=False):
+def run_chat(run,thread,*,event_wait=False,policy=None):
     run=Path(run);prompt=(run/'prompt.txt').read_text(encoding='utf-8-sig')
     session_ids=set()
     with (run/'run.jsonl').open('x') as raw,(run/'timed.jsonl').open('x') as timed,(run/'run.stderr').open('x') as err:
-        p=subprocess.Popen(codex_command(prompt,thread,event_wait=event_wait),stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=err,cwd=run,text=True,encoding='utf-8',bufsize=1)
+        p=subprocess.Popen(codex_command(prompt,thread,event_wait=event_wait,policy=policy),stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=err,cwd=run,text=True,encoding='utf-8',bufsize=1)
         (run/'codex.pid').write_text(str(p.pid))
         for line in p.stdout:
             at=time.time();raw.write(line);raw.flush()
@@ -54,4 +58,4 @@ def run_chat(run,thread,*,event_wait=False):
         except Exception as e:(run/('stop-error-'+sid+'.txt')).write_text(type(e).__name__)
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('run',type=Path);p.add_argument('--thread');p.add_argument('--event-wait',action='store_true');a=p.parse_args();os.umask(0o077);run_chat(a.run,a.thread,event_wait=a.event_wait)
+    p=argparse.ArgumentParser();p.add_argument('run',type=Path);p.add_argument('--thread');p.add_argument('--event-wait',action='store_true');p.add_argument('--policy',type=Path);a=p.parse_args();os.umask(0o077);run_chat(a.run,a.thread,event_wait=a.event_wait,policy=json.loads(a.policy.read_text()) if a.policy else None)

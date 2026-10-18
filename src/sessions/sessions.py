@@ -26,8 +26,8 @@ class Sessions:
  def __exit__(self,*args):self.db.close()
  def create(self,*,harness,model,effort,account_id=None,group_id=None,native_session_id=None,purpose='chat',bot_ref=None):
   if harness not in ('codex','antigravity'):raise ValueError('unknown harness')
-  if purpose not in ('chat','learning','research'):raise ValueError('unknown purpose')
-  if purpose=='chat' and (account_id is None or group_id is None):raise ValueError('chat binding required')
+  if purpose not in ('chat','learning','research','screening'):raise ValueError('unknown purpose')
+  if purpose in ('chat','screening') and (account_id is None or group_id is None):raise ValueError('chat binding required')
   s=dict(session_id=uuid.uuid4().hex,harness=harness,model=model,effort=effort,purpose=purpose,native_session_id=native_session_id,status='idle',created_at=time.time())
   if account_id is not None:s['account_id']=str(account_id)
   if group_id is not None:s['group_id']=str(group_id)

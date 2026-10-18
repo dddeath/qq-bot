@@ -154,9 +154,14 @@ def collect_creators(k,cfg,now):
 
 
 
+def video_settings(config):
+    return {**config.get('video_reading',{}), 'bilibili_provider':config.get('bilibili_provider',{}),
+            'reading_review':config.get('reading_review',config.get('video_reading',{}).get('reading_review',{}))}
+
 def main():
 
-    p=argparse.ArgumentParser();p.add_argument('config');p.add_argument('--once',action='store_true');p.add_argument('--collect-only',action='store_true');a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('config');p.add_argument('--once',action='store_true');p.add_argument('--collect-only',action='store_true');p.add_argument('--retry-failed',action='store_true');a=p.parse_args()
+    if a.retry_failed and not a.once:p.error('--retry-failed requires --once')
 
     cfg=json.loads(Path(a.config).read_text());k=instance(cfg);os.umask(0o077)
 
@@ -176,9 +181,9 @@ def main():
 
                 collect_creators(k,cfg,now)
 
-                video_config={**cfg.get('video_reading',{}),'bilibili_provider':cfg.get('bilibili_provider',{})}
+                video_config=video_settings(cfg)
 
-                result=k.run(lambda batch,run:model(batch,run,video_config=video_config),time.time())
+                result=k.run(lambda batch,run:model(batch,run,video_config=video_config),time.time(),retry_failed=a.retry_failed)
 
                 if a.once or not result['state'].startswith('already_'):print(json.dumps(result,ensure_ascii=False),flush=True)
 

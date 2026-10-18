@@ -87,16 +87,16 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);''')
                 value=json.loads(body)
                 if not query or query.casefold() in body.casefold():result[kind].append(value)
         return {k:v[:max(1,min(limit,100))] for k,v in result.items()}
-    def run(self,model,now=None):
+    def run(self,model,now=None,*,retry_failed=False):
         now=time.time() if now is None else now;day=dt.datetime.fromtimestamp(now,TZ).strftime('%Y-%m-%d')
         run=self.root/'runs'/(dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')+'-'+uuid.uuid4().hex[:8])
         with self.db() as d:
             d.execute('BEGIN IMMEDIATE')
             previous=d.execute('SELECT state,run FROM days WHERE day=?',(day,)).fetchone()
-            if previous:return dict(state='already_'+previous[0],run=previous[1])
-            run.mkdir(parents=True);d.execute('INSERT INTO days VALUES(?,?,?,?)',(day,'started',str(run),now))
+            if previous and not (retry_failed and previous[0]=='failed'):return dict(state='already_'+previous[0],run=previous[1])
+            run.mkdir(parents=True);d.execute('INSERT OR REPLACE INTO days VALUES(?,?,?,?)',(day,'started',str(run),now))
         batch=self.prepare(now)
-        write(run/'manifest.json',dict(day=day,account=self.account,group=self.group,cutoff=now,model='gpt-6-astra',effort='medium',service_tier='default'))
+        write(run/'manifest.json',dict(day=day,account=self.account,group=self.group,cutoff=now,model='gpt-6-astra',effort='medium',service_tier='default',retry_of=previous[1] if previous else None))
         for name,key in [('messages','messages'),('search-completions','searches'),('creator-content','creators')]:
             path=run/'input'/(name+'.jsonl');path.parent.mkdir(parents=True,exist_ok=True)
             path.write_text(''.join(json.dumps(x,ensure_ascii=False)+'\n' for x in batch[key]),encoding='utf-8')

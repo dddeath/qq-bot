@@ -1,0 +1,12 @@
+{
+  "activation": {
+    "enabled": true, "threshold": 10,
+    "weights": {"human": 1, "video_share": 5, "bot": 0.25},
+    "active_idle_timeout_seconds": 900, "buffer_ttl_seconds": 3600,
+    "bot_ids": ["3558534198", "3093635016"],
+    "immediate": {"mention_self": true, "reply_to_self": true}
+  },
+  "batching": {"max_messages": 10, "max_wait_seconds": 30},
+  "screening": {"enabled": true, "model": "gpt-6-luna", "effort": "high", "fast": true},
+  "main_context": {"target_window": 256000, "fast": false}
+}
