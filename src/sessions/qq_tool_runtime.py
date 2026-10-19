@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 
 
-def server_configs(snapshot, path, *, python, proxy):
+def server_configs(snapshot, path, *, python, proxy, host_wait=False):
     servers = {name: {'command': python, 'args': [proxy, '--config', str(path), '--server', name]}
                for name, definition in snapshot['servers'].items() if definition['tools']}
     if (snapshot.get('qq_tools') or {}).get('capabilities'):
@@ -12,6 +12,10 @@ def server_configs(snapshot, path, *, python, proxy):
             raise ValueError('qq-guides is reserved for operation guides')
         servers['qq-guides'] = {'command': python,
             'args': [str(Path(__file__).with_name('qq_guides_mcp.py')), '--snapshot', str(path)]}
+    if host_wait:
+        for name, config in servers.items():
+            if name == 'qq-guides' or snapshot['servers'][name].get('url'):
+                config['args'].append('--host-wait')
     return servers
 
 
@@ -32,11 +36,11 @@ def startup_prompt(prompt, snapshot):
     return prompt if not qq else prompt+'\n\n'+qq['startup']
 
 
-def codex_overrides(path, *, existing_servers=(), conversation=None):
+def codex_overrides(path, *, existing_servers=(), conversation=None, host_wait=False):
     path = Path(path).resolve()
     snapshot = load_snapshot(path, conversation=conversation)
     servers = server_configs(snapshot, path, python=sys.executable,
-                             proxy=str(Path(__file__).with_name('tool_proxy.py')))
+                             proxy=str(Path(__file__).with_name('tool_proxy.py')), host_wait=host_wait)
     overrides = {f'mcp_servers.{name}.enabled': False for name in existing_servers}
     for name, config in servers.items():
         # Fresh namespaces avoid inheriting an old URL, credential or disabled list.

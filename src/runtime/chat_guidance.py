@@ -2,8 +2,9 @@
 from copy import deepcopy
 
 
-STATIC_FIELDS = ('persona_preset', 'persona_name', 'reminders', 'examples',
-                 'examples_source', 'data_boundary')
+FIXED_FIELDS = ('persona_preset', 'persona_name', 'examples_source', 'data_boundary')
+SCENE_FIELDS = ('reminders', 'examples')
+STATIC_FIELDS = FIXED_FIELDS + SCENE_FIELDS
 
 
 class GuidanceProjection:
@@ -38,9 +39,18 @@ class GuidanceProjection:
         snapshot = {key: deepcopy(guidance[key]) for key in STATIC_FIELDS
                     if key in guidance}
         snapshot['prompt_version'] = guidance.get('prompt_version')
-        if snapshot == self.delivered:
+        if self.delivered is not None and snapshot['prompt_version'] == self.delivered['prompt_version']:
             for key in STATIC_FIELDS:
-                guidance.pop(key, None)
+                if key in snapshot and snapshot[key] == self.delivered.get(key):
+                    guidance.pop(key, None)
+            old = self.delivered.get('reminders')
+            new = snapshot.get('reminders')
+            if isinstance(old, list) and isinstance(new, list) and old != new:
+                guidance.pop('reminders', None)
+                guidance['reminders_update'] = {
+                    'remove': [item for item in old if item not in new],
+                    'add': [item for item in new if item not in old],
+                }
         return projected, snapshot
 
     def commit(self, snapshot):

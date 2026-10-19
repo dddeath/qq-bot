@@ -3,9 +3,11 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import hashlib
+from host_wait import host_text
 
 
-def handle(snapshot, request):
+def handle(snapshot, request, *, host_wait=False):
     capabilities = (snapshot.get('qq_tools') or {}).get('capabilities', {})
     method = request.get('method')
     result = {}
@@ -34,6 +36,10 @@ def handle(snapshot, request):
                     tool_profile_ref=snapshot['tool_profile_ref'], bot_ref=snapshot['bot_ref'],
                     tools=cap['tools'], parameters=cap['parameters'], guide_sha256=cap['guide_sha256'],
                     section=section, sections=list(cap.get('sections',{})), guide=guide)
+        if host_wait:
+            body['guide'] = host_text(body['guide'])
+            body['delivery_mode'] = 'host_wait'
+            body['delivered_guide_sha256'] = hashlib.sha256(body['guide'].encode('utf-8')).hexdigest()
         result = {'content': [{'type': 'text', 'text': json.dumps(body, ensure_ascii=False)}], 'structuredContent': body}
     elif method not in ('ping', 'notifications/initialized'):
         raise ValueError('unsupported method')
@@ -42,11 +48,13 @@ def handle(snapshot, request):
 
 def main():
     parser = argparse.ArgumentParser(); parser.add_argument('--snapshot', type=Path, required=True)
-    snapshot = json.loads(parser.parse_args().snapshot.read_text(encoding='utf-8'))
+    parser.add_argument('--host-wait', action='store_true')
+    args = parser.parse_args()
+    snapshot = json.loads(args.snapshot.read_text(encoding='utf-8'))
     for line in sys.stdin:
         request = json.loads(line)
         try:
-            response = handle(snapshot, request)
+            response = handle(snapshot, request, host_wait=args.host_wait)
         except (ValueError, TypeError, KeyError) as exc:
             response = dict(jsonrpc='2.0', id=request.get('id'), error={'code': -32602, 'message': str(exc)})
         if 'id' in request:

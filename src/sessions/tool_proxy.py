@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from urllib.request import Request, build_opener, ProxyHandler, HTTPRedirectHandler
 from urllib.parse import urlparse
+from host_wait import project_host_response
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -14,8 +15,8 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def http_proxy(config):
-    """Bridge Tulpa's stateless JSON HTTP MCP without changing tool results."""
+def http_proxy(config, *, host_wait=False):
+    """Bridge Tulpa HTTP MCP; optionally project host-owned waiting instructions."""
     url=config['url'];parsed=urlparse(url)
     if parsed.scheme!='http' or parsed.hostname not in ('localhost','127.0.0.1','::1') or parsed.username or parsed.password:
         raise ValueError('Tulpa endpoint must be loopback HTTP')
@@ -43,6 +44,8 @@ def http_proxy(config):
             except Exception:
                 # A write may already have reached QQ. Never replay it here.
                 response={'jsonrpc':'2.0','id':request.get('id'),'error':{'code':-32000,'message':'Tulpa transport result unknown; no automatic retry'}}
+        if host_wait:
+            response = project_host_response(response, request)
         if 'id' in request:print(json.dumps(response,ensure_ascii=False),flush=True)
 
 
@@ -50,10 +53,11 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--config',required=True)
     parser.add_argument('--server',required=True)
+    parser.add_argument('--host-wait', action='store_true')
     args=parser.parse_args()
     with open(args.config,encoding='utf-8') as f:config=json.load(f)['servers'][args.server]
     if config.get('url'):
-        http_proxy(config)
+        http_proxy(config, host_wait=args.host_wait)
         return
     allowed=set(config['tools'])
     child=subprocess.Popen([config['command'],*config.get('args',[])],env=dict(os.environ,**config.get('env',{})),
