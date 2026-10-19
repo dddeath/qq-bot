@@ -12,6 +12,7 @@ from codex_app_transport import AppServerTransport
 from codex_session_control import CodexSession
 from context_control import CompactionPolicy
 from context_runner import ChatLoop
+from chat_guidance import GuidanceProjection
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'sessions'))
 from qq_tool_runtime import load_snapshot, startup_prompt, codex_overrides
 
@@ -50,16 +51,30 @@ def event_inputs(event):
 class EventSession:
     def __init__(self, native, timeout):
         self.native, self.timeout = native, timeout
+        self.guidance = GuidanceProjection()
+        self.compaction_generation = 0
+
+    def context_compacted(self):
+        self.compaction_generation += 1
+        self.guidance.reset()
 
     @property
     def last_usage(self):
         return self.native.last_usage
 
     def run_turn(self, event):
-        return self.native.run_turn(event_inputs(event), timeout=self.timeout)
+        projected, snapshot = self.guidance.prepare(event)
+        generation = self.compaction_generation
+        result = self.native.run_turn(event_inputs(projected), timeout=self.timeout)
+        if result['status'] == 'completed' and generation == self.compaction_generation:
+            self.guidance.commit(snapshot)
+        return result
 
     def compact(self):
-        return self.native.compact(timeout=self.timeout)
+        result = self.native.compact(timeout=self.timeout)
+        if result['status'] == 'completed':
+            self.context_compacted()
+        return result
 
 
 class ToolDurations:
@@ -155,6 +170,7 @@ def run_context_chat(run, thread, *, policy, tulpa_session, conversation, activa
     for key, value in overrides.items():
         command += ['-c', key+'='+json.dumps(value)]
     tracker = ToolDurations(thread, strategy)
+    event_session = None
     with (run/'app-server.jsonl').open('x', encoding='utf-8') as raw, (run/'context-events.jsonl').open('x', encoding='utf-8') as evidence, (run/'app-server.stderr').open('x') as err, (run/'timed.jsonl').open('x', encoding='utf-8') as timed, (run/'run.jsonl').open('x', encoding='utf-8') as legacy:
         def write_legacy(event, now):
             legacy.write(json.dumps(event, ensure_ascii=False)+'\n');legacy.flush()
@@ -172,6 +188,11 @@ def run_context_chat(run, thread, *, policy, tulpa_session, conversation, activa
             if normalized:
                 write_legacy(normalized, now)
             tracker.observe(event, time.monotonic())
+            params = event.get('params', {})
+            if (event_session is not None and params.get('threadId') == thread
+                    and event.get('method') == 'item/completed'
+                    and params.get('item', {}).get('type') == 'contextCompaction'):
+                event_session.context_compacted()
 
         with AppServerTransport(command, cwd=run, stderr=err, record=wire_record) as rpc:
             (run/'codex.pid').write_text(str(rpc.process.pid))
@@ -181,7 +202,8 @@ def run_context_chat(run, thread, *, policy, tulpa_session, conversation, activa
             native.configure(prompt+HOST_WAIT_INSTRUCTIONS,
                 cwd=str(run.resolve()), model='gpt-6.1-sol', approvalPolicy='never', sandbox='read-only',
                 serviceTier='priority' if context.get('fast', False) else 'default')
-            loop = ChatLoop(EventSession(native, compact.get('operation_timeout_seconds', 600)), tulpa_session,
+            event_session = EventSession(native, compact.get('operation_timeout_seconds', 600))
+            loop = ChatLoop(event_session, tulpa_session,
                             window=window, policy=strategy, record=record)
             wake = NativeCompletions(home/'sessions', thread)
             while True:
