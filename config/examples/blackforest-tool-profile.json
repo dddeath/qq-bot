@@ -1,0 +1,24 @@
+{
+  "kind": "tool_profile",
+  "id": "blackforest-tools",
+  "expected_version": 0,
+  "body": {
+    "servers": {
+      "blackforest-nodes": {
+        "command": "/absolute/host-python",
+        "args": [
+          "/absolute/release/src/runtime/blackforest_nodes.py",
+          "--config",
+          "/absolute/private/blackforest-nodes.json"
+        ],
+        "harnesses": [
+          "codex",
+          "antigravity"
+        ],
+        "tools": [
+          "predict_blackforest_nodes"
+        ]
+      }
+    }
+  }
+}

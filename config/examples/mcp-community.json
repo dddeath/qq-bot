@@ -1,0 +1,6 @@
+{
+  "bot_gallery": {
+    "database": "/absolute/private/sessions.sqlite",
+    "bot_id": "example-bot"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "repository": "/absolute/external/hlsh-helper",
+  "python": "/absolute/hlsh-venv/bin/python",
+  "timeout_seconds": 30
+}

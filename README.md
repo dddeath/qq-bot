@@ -40,8 +40,9 @@ B站依赖修正、凭据与视频环境见 [配置说明](docs/configuration.md
 
 1. [架构与消息链路](docs/architecture.md)
 2. [配置与资源路径](docs/configuration.md)
-3. [资料与视频工具](docs/tools.md)
-4. [每日学习与原生轨迹](docs/learning.md)
-5. [知识库存储布局](docs/knowledge/storage-layout.md)
+3. [机器人配置与生效步骤](docs/bot-configuration.md)
+4. [资料与视频工具](docs/tools.md)
+5. [每日学习与原生轨迹](docs/learning.md)
+6. [知识库存储布局](docs/knowledge/storage-layout.md)
 
 `knowledge/group-memory/` 保留空白文件结构。其他领域知识库正文包含在仓库；固定 UP 名单仅包含公开领域账号。图片与引用内容来源见各自目录说明，第三方组件遵循各自许可。

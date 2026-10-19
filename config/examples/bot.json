@@ -1,0 +1,32 @@
+{
+  "kind": "bot",
+  "id": "example-bot",
+  "expected_version": 0,
+  "body": {
+    "account_id": "REPLACE_QQ_ACCOUNT",
+    "bindings": {
+      "knowledge_root": "/absolute/private/knowledge"
+    },
+    "persona_ref": "/absolute/private/persona.md",
+    "tool_profile": {
+      "kind": "tool_profile",
+      "id": "shared-tools",
+      "version": 1
+    },
+    "disabled_tools": {},
+    "gallery": {
+      "directory": "/absolute/private/gallery",
+      "generated_directory": "/absolute/private/generated",
+      "items": [
+        {
+          "file": "wave.png",
+          "description": "挥手打招呼",
+          "tags": [
+            "挥手",
+            "招呼"
+          ]
+        }
+      ]
+    }
+  }
+}

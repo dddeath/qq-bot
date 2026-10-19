@@ -1,0 +1,28 @@
+{
+  "kind": "tool_profile",
+  "id": "shared-tools",
+  "expected_version": 0,
+  "body": {
+    "servers": {
+      "local-knowledge": {
+        "command": "/absolute/venv/bin/python",
+        "args": [
+          "/absolute/release/src/runtime/local_knowledge.py"
+        ],
+        "env": {
+          "QQ_KNOWLEDGE_ROOT": "${knowledge_root}",
+          "QQ_KNOWLEDGE_ACCOUNT": "${account_id}",
+          "QQ_KNOWLEDGE_GROUP": "${group_id}"
+        },
+        "harnesses": [
+          "codex",
+          "antigravity"
+        ],
+        "tools": [
+          "search_local_knowledge",
+          "read_local_knowledge"
+        ]
+      }
+    }
+  }
+}

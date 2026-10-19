@@ -1,0 +1,11 @@
+--- a/chatlocal/mcp_chat_media.py
++++ b/chatlocal/mcp_chat_media.py
+@@ -6,5 +6,7 @@
+         if not path.exists():return []
+         config=json.loads(path.read_text('utf-8'))
+-        if row['conversation_id'] not in config.get('conversation_ids',[]):return []
++        from bot_gallery import resolve_gallery
++        config=resolve_gallery(config, row['conversation_id'])
++        if config is None:return []
+         root=Path(config['directory']).resolve();entries=[]
+         for entry in config.get('items',[]):

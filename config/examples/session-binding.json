@@ -1,0 +1,12 @@
+{
+  "session_id": "REPLACE_EXISTING_SESSION_ID",
+  "purpose": "chat",
+  "bot_ref": {
+    "kind": "bot",
+    "id": "example-bot",
+    "version": 1
+  },
+  "runtime_refs": {
+    "harness_config": "/absolute/private/harness.json"
+  }
+}
