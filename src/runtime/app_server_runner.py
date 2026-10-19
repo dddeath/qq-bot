@@ -206,7 +206,10 @@ def run_context_chat(run, thread, *, policy, tulpa_session, conversation, activa
             event_session = EventSession(native, compact.get('operation_timeout_seconds', 600))
             loop = ChatLoop(event_session, tulpa_session,
                             window=window, policy=strategy, record=record)
-            wake = NativeCompletions(home/'sessions', thread)
+            def record_run(item):
+                with (run/'background-runs.jsonl').open('a', encoding='utf-8') as out:
+                    out.write(json.dumps(item, ensure_ascii=False)+'\n')
+            wake = NativeCompletions(home/'sessions', thread, record_run=record_run)
             while True:
                 background = wake()
                 body, blocks = (background, None) if background else upstream(dict(loop.arguments, timeout_seconds=10))

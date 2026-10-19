@@ -5,6 +5,7 @@ import sys
 import tomllib
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'sessions'))
 from qq_tool_runtime import load_snapshot, startup_prompt, codex_overrides
+from run_records import recorded, loaded_configuration
 
 MODEL='gpt-6.1-sol'
 EFFORT='low'
@@ -83,9 +84,21 @@ if __name__=='__main__':
     policy=json.loads(a.policy.read_text()) if a.policy else None
     if a.tool_snapshot:
         policy={**(policy or {}),'tool_snapshot':str(a.tool_snapshot.resolve())}
-    if a.context_control:
-        from app_server_runner import run_context_chat
-        run_context_chat(a.run,a.thread,policy=policy,tulpa_session=a.tulpa_session,
-                         conversation=a.conversation,activation_state=a.activation_state)
-    else:
-        run_chat(a.run,a.thread,event_wait=a.event_wait,policy=policy)
+    session_id=load_snapshot(a.tool_snapshot).get('session_id') if a.tool_snapshot else None
+    loaded=loaded_configuration(model=MODEL,effort=EFFORT,release=Path(__file__).resolve().parents[2],
+        snapshot=(policy or {}).get('tool_snapshot'),main_context=(policy or {}).get('main_context',{}),
+        delivery_mode='host_wait' if a.context_control else 'event_wait' if a.event_wait else 'model_wait')
+    loaded['persona_sha256']=__import__('hashlib').sha256((a.run/'prompt.txt').read_bytes()).hexdigest()
+    with recorded(a.run, purpose='chat', harness='codex', native_session_id=a.thread, session_id=session_id, configuration=loaded) as execution:
+        if a.context_control:
+            from app_server_runner import run_context_chat
+            run_context_chat(a.run,a.thread,policy=policy,tulpa_session=a.tulpa_session,
+                             conversation=a.conversation,activation_state=a.activation_state)
+        else:
+            run_chat(a.run,a.thread,event_wait=a.event_wait,policy=policy)
+
+        exit_path=a.run/'exit.json'
+        if exit_path.exists():
+            result=json.loads(exit_path.read_text())
+            execution['result']=result
+            execution['status']='succeeded' if result.get('exit_code')==0 else 'failed'

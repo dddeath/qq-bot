@@ -98,6 +98,8 @@ class Sessions:
   from continuation_policy import auxiliary_read_denial
   recoverable=s['harness']=='antigravity' and s.get('purpose')=='chat' and auxiliary_read_denial(turn)
   if recoverable:turn['continuation']={'action':'abandon_auxiliary_read','reason':'explicit_read_permission_denial'}
+  from run_records import from_turn
+  turn['run_receipt']=from_turn(s,turn)
   s['status']='idle' if turn['status']=='success' or recoverable else 'unknown'
   with self.db:
    self._save(s);self.db.execute('UPDATE turns SET body=? WHERE session=? AND request=?',(json.dumps(turn),session_id,request_id))

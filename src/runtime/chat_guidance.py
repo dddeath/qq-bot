@@ -1,5 +1,9 @@
 """Project Tulpa guidance into host-managed model turns without changing events."""
 from copy import deepcopy
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'sessions'))
+from host_wait import project_body
 
 
 FIXED_FIELDS = ('persona_preset', 'persona_name', 'examples_source', 'data_boundary')
@@ -16,7 +20,11 @@ class GuidanceProjection:
 
     def prepare(self, event):
         projected = deepcopy(event)
-        body = projected.get('payload', projected)
+        body = project_body(projected.get('payload', projected))
+        if 'payload' in projected:
+            projected['payload'] = body
+        else:
+            projected = body
         next_call = body.get('next_call', {})
         if next_call.get('tool') == 'wait_chat_messages':
             body.pop('next_call')

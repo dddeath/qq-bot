@@ -7,14 +7,14 @@ import time
 import uuid
 from pathlib import Path
 from contextlib import contextmanager
-
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'sessions'))
+from run_records import recorded
 TZ=dt.timezone(dt.timedelta(hours=8))
 RETENTION=7*86400
-
 def write(path,value):
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
     tmp=path.with_suffix(path.suffix+'.tmp');tmp.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8');tmp.replace(path)
-
 class Learning:
     def __init__(self,root,account,group):
         self.root=Path(root)/'groups'/str(account)/str(group);self.root.mkdir(parents=True,exist_ok=True)
@@ -95,48 +95,50 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);''')
             previous=d.execute('SELECT state,run FROM days WHERE day=?',(day,)).fetchone()
             if previous and not (retry_failed and previous[0]=='failed'):return dict(state='already_'+previous[0],run=previous[1])
             run.mkdir(parents=True);d.execute('INSERT OR REPLACE INTO days VALUES(?,?,?,?)',(day,'started',str(run),now))
-        batch=self.prepare(now)
-        write(run/'manifest.json',dict(day=day,account=self.account,group=self.group,cutoff=now,model='gpt-6-astra',effort='medium',service_tier='default',retry_of=previous[1] if previous else None))
-        for name,key in [('messages','messages'),('search-completions','searches'),('creator-content','creators')]:
-            path=run/'input'/(name+'.jsonl');path.parent.mkdir(parents=True,exist_ok=True)
-            path.write_text(''.join(json.dumps(x,ensure_ascii=False)+'\n' for x in batch[key]),encoding='utf-8')
-        write(run/'input/existing-learning.json',self.read(limit=100))
-        try:
-            output=model(batch,run) if batch['messages'] or batch['searches'] or batch['creators'] else dict(expressions=[],meanings=[])
-            write(run/'review/candidates.json',output)
-            sources={str(x['id']):x for x in batch['messages']+batch['searches']+batch['creators']}
-            clean={'expressions':[],'meanings':[]};rejected=[]
-            for kind in clean:
-                for item in output.get(kind,[]):
-                    ids=item.get('source_ids',[])
-                    if not ids or any(str(i) not in sources for i in ids):
-                        rejected.append(dict(kind=kind,item=item,reason='unknown_source'));continue
-                    keys=('situation','surface_form','style') if kind=='expressions' else ('term','meaning','usage','conditions','kind')
-                    if any(not isinstance(item.get(k),str) for k in keys):raise ValueError('invalid_publication_fields')
-                    if kind=='expressions':
-                        quote=item.get('evidence_quote','')
-                        if not quote or not any(quote in sources[str(i)].get('text','') for i in ids):
-                            rejected.append(dict(kind=kind,item=item,reason='quote_missing'));continue
-                    elif item['kind'] not in ('group','community','fact'):raise ValueError('invalid_meaning_kind')
-                    value={k:item[k] for k in keys}
-                    identity=value.get('term',value.get('surface_form',''))
-                    value['id']=uuid.uuid5(uuid.NAMESPACE_URL,self.account+'/'+self.group+'/'+kind+'/'+identity).hex
-                    clean[kind].append(value)
-            referenced={str(i) for kind in clean for item in output.get(kind,[]) for i in item.get('source_ids',[]) if str(i) in sources}
-            write(run/'review/evidence.json',{i:sources[i] for i in referenced})
-            write(run/'review/assessments.json',{'rejected':rejected})
-            write(run/'review/validation.json',{'valid':True,'accepted':{k:len(v) for k,v in clean.items()}})
-            for kind,values in clean.items():write(run/'published'/(kind+'.json'),values)
-            with self.db() as d:
-                for kind,values in clean.items():
-                    for value in values:d.execute('INSERT OR REPLACE INTO published VALUES(?,?,?)',(kind,value['id'],json.dumps(value,ensure_ascii=False)))
-                d.execute('INSERT INTO applied VALUES(?)',(str(run),))
-                d.execute("INSERT OR REPLACE INTO settings VALUES('cursor',?)",(str(now),))
-                d.execute("UPDATE days SET state='completed' WHERE day=?",(day,))
-            receipt=dict(state='completed',run=str(run),accepted={k:len(v) for k,v in clean.items()})
-            write(run/'apply.json',receipt);write(self.root/'state.json',dict(last_completed_day=day,last_run=str(run),cursor=now))
-            (run/'summary.md').write_text('# 每日学习结果\n\n'+json.dumps(receipt,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
-            return receipt
-        except Exception as exc:
-            with self.db() as d:d.execute("UPDATE days SET state='failed' WHERE day=?",(day,))
-            write(run/'apply.json',dict(state='failed',error=str(exc)));raise
+        with recorded(run, purpose='learning', harness='codex', configuration={'model':'gpt-6-astra','effort':'medium','service_tier':'default','release':str(Path(__file__).resolve().parents[2])}) as execution:
+            batch=self.prepare(now)
+            write(run/'manifest.json',dict(day=day,account=self.account,group=self.group,cutoff=now,model='gpt-6-astra',effort='medium',service_tier='default',retry_of=previous[1] if previous else None))
+            for name,key in [('messages','messages'),('search-completions','searches'),('creator-content','creators')]:
+                path=run/'input'/(name+'.jsonl');path.parent.mkdir(parents=True,exist_ok=True)
+                path.write_text(''.join(json.dumps(x,ensure_ascii=False)+'\n' for x in batch[key]),encoding='utf-8')
+            write(run/'input/existing-learning.json',self.read(limit=100))
+            try:
+                output=model(batch,run) if batch['messages'] or batch['searches'] or batch['creators'] else dict(expressions=[],meanings=[])
+                write(run/'review/candidates.json',output)
+                sources={str(x['id']):x for x in batch['messages']+batch['searches']+batch['creators']}
+                clean={'expressions':[],'meanings':[]};rejected=[]
+                for kind in clean:
+                    for item in output.get(kind,[]):
+                        ids=item.get('source_ids',[])
+                        if not ids or any(str(i) not in sources for i in ids):
+                            rejected.append(dict(kind=kind,item=item,reason='unknown_source'));continue
+                        keys=('situation','surface_form','style') if kind=='expressions' else ('term','meaning','usage','conditions','kind')
+                        if any(not isinstance(item.get(k),str) for k in keys):raise ValueError('invalid_publication_fields')
+                        if kind=='expressions':
+                            quote=item.get('evidence_quote','')
+                            if not quote or not any(quote in sources[str(i)].get('text','') for i in ids):
+                                rejected.append(dict(kind=kind,item=item,reason='quote_missing'));continue
+                        elif item['kind'] not in ('group','community','fact'):raise ValueError('invalid_meaning_kind')
+                        value={k:item[k] for k in keys}
+                        identity=value.get('term',value.get('surface_form',''))
+                        value['id']=uuid.uuid5(uuid.NAMESPACE_URL,self.account+'/'+self.group+'/'+kind+'/'+identity).hex
+                        clean[kind].append(value)
+                referenced={str(i) for kind in clean for item in output.get(kind,[]) for i in item.get('source_ids',[]) if str(i) in sources}
+                write(run/'review/evidence.json',{i:sources[i] for i in referenced})
+                write(run/'review/assessments.json',{'rejected':rejected})
+                write(run/'review/validation.json',{'valid':True,'accepted':{k:len(v) for k,v in clean.items()}})
+                for kind,values in clean.items():write(run/'published'/(kind+'.json'),values)
+                with self.db() as d:
+                    for kind,values in clean.items():
+                        for value in values:d.execute('INSERT OR REPLACE INTO published VALUES(?,?,?)',(kind,value['id'],json.dumps(value,ensure_ascii=False)))
+                    d.execute('INSERT INTO applied VALUES(?)',(str(run),))
+                    d.execute("INSERT OR REPLACE INTO settings VALUES('cursor',?)",(str(now),))
+                    d.execute("UPDATE days SET state='completed' WHERE day=?",(day,))
+                receipt=dict(state='completed',run=str(run),accepted={k:len(v) for k,v in clean.items()})
+                write(run/'apply.json',receipt);write(self.root/'state.json',dict(last_completed_day=day,last_run=str(run),cursor=now))
+                (run/'summary.md').write_text('# 每日学习结果\n\n'+json.dumps(receipt,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+                execution['result']=receipt
+                return receipt
+            except Exception as exc:
+                with self.db() as d:d.execute("UPDATE days SET state='failed' WHERE day=?",(day,))
+                write(run/'apply.json',dict(state='failed',error=str(exc)));raise

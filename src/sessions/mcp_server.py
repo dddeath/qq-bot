@@ -3,7 +3,6 @@ import argparse,json,sys
 from sessions import Sessions
 from harnesses import Harnesses
 import control_mcp
-
 def tools():
  fields={k:{'type':'string'} for k in ('harness','account_id','group_id','model','effort','native_session_id')};fields['harness']['enum']=['codex','antigravity']
  fields.update(purpose={'type':'string','enum':['chat','learning','research']},bot_ref={'type':'object'})
@@ -14,7 +13,6 @@ def tools():
  ('session_get','Read session status.',{'session_id':{'type':'string'}},['session_id']),
  ('session_history','Read messages, native events, errors and timings.',{'session_id':{'type':'string'}},['session_id']),
  ('session_send','Send one message or resume the stored native thread. Repeated request_id is not executed again.',{k:{'type':'string'} for k in ('session_id','prompt','request_id')},['session_id','prompt','request_id'])]] + control_mcp.tools()
-
 def main():
  p=argparse.ArgumentParser();p.add_argument('--config',required=True);a=p.parse_args();c=json.load(open(a.config,encoding='utf-8-sig'));execute=Harnesses(c['harnesses'],c['evidence'])
  with Sessions(c['database']) as api:
@@ -34,7 +32,7 @@ def main():
      control_mcp.validate(schema,args)
      methods={'session_list':api.list,'session_create':api.create,'session_adopt':api.adopt,'session_get':api.get,'session_history':api.history}
      try:
-      if n.startswith('configuration_') or n in ('bot_inherit','session_bind','session_effective_configuration','session_runs','session_export_tools'):value=control_mcp.call(api,n,args)
+      if n.startswith('configuration_') or n in ('bot_inherit','session_bind','session_effective_configuration','session_runs','session_export_tools','session_publish_runtime','session_rollback_publication'):value=control_mcp.call(api,n,args)
       else:value=api.send(**args,execute=execute) if n=='session_send' else methods[n](**args)
       result={'content':[{'type':'text','text':json.dumps(value,ensure_ascii=False)}]}
      except Exception as exc:result={'isError':True,'content':[{'type':'text','text':str(exc)}]}

@@ -103,30 +103,115 @@ class ControlPlane:
             else:self.db.execute('UPDATE session_configuration SET body=? WHERE session=?',(json.dumps(receipt['before']),sid))
         return {'changed':True,'runtime_unchanged':True}
 
+    def publish_runtime(self, session_id, *, release, run_path, tool_snapshot=None):
+        """Atomically register an observed deployment; never start or stop a runner."""
+        if not release or not run_path:
+            raise ValueError('release and run_path required')
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            row = self.db.execute('SELECT body FROM sessions WHERE id=?', (session_id,)).fetchone()
+            if row is None:
+                raise ValueError('unknown session')
+            base = json.loads(row[0])
+            row = self.db.execute('SELECT body FROM session_configuration WHERE session=?', (session_id,)).fetchone()
+            overlay = json.loads(row[0]) if row else None
+            before = {'base': copy.deepcopy(base), 'overlay': copy.deepcopy(overlay)}
+            config = copy.deepcopy(overlay or {})
+            refs = {**base.pop('runtime_refs', {}), **config.get('runtime_refs', {})}
+            refs['release'] = release
+            if tool_snapshot is not None:
+                refs['tool_snapshot'] = tool_snapshot
+            config['runtime_refs'] = refs
+            config.pop('run_path', None)
+            base['run_path'] = run_path
+            after = {'base': base, 'overlay': config}
+            if before == after:
+                return dict(session_id=session_id, changed=False)
+            self.db.execute('UPDATE sessions SET body=? WHERE id=?', (json.dumps(base), session_id))
+            self.db.execute('INSERT OR REPLACE INTO session_configuration VALUES(?,?)', (session_id, json.dumps(config)))
+            return dict(session_id=session_id, changed=True, before=before, after=after)
+
+    def rollback_publication(self, receipt):
+        if not receipt['changed']:
+            return {'changed': False}
+        sid = receipt['session_id']
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            row = self.db.execute('SELECT body FROM sessions WHERE id=?', (sid,)).fetchone()
+            extra = self.db.execute('SELECT body FROM session_configuration WHERE session=?', (sid,)).fetchone()
+            current = {'base': json.loads(row[0]) if row else None,
+                       'overlay': json.loads(extra[0]) if extra else None}
+            if current == receipt['before']:
+                return {'changed': False}
+            if current != receipt['after']:
+                raise ValueError('session changed since publication')
+            self.db.execute('UPDATE sessions SET body=? WHERE id=?', (json.dumps(receipt['before']['base']), sid))
+            if receipt['before']['overlay'] is None:
+                self.db.execute('DELETE FROM session_configuration WHERE session=?', (sid,))
+            else:
+                self.db.execute('INSERT OR REPLACE INTO session_configuration VALUES(?,?)', (sid, json.dumps(receipt['before']['overlay'])))
+        return {'changed': True, 'runtime_unchanged': True}
+
     def runs(self, session_id):
-        s=self.sessions.get(session_id)
-        root=s.get('runtime_refs',{}).get('learning_runs_root')
+        from run_records import receipt, from_turn
+        from sessions import process_alive
+        s = self.sessions.get(session_id)
+        def read(path):
+            record_path = path/'run-receipt.json'
+            if record_path.exists():
+                item = json.loads(record_path.read_text(encoding='utf-8'))
+                if item.get('session_id') not in (None, session_id):
+                    raise ValueError('run session mismatch')
+                item['session_id'] = session_id
+                if item['status'] == 'running' and (not item.get('owner_pid') or not process_alive(item['owner_pid'])):
+                    item['status'] = 'unknown'
+                return item
+            item = receipt(s, str(path), status='unknown', evidence=str(path))
+            item['native_session_id'] = None if s.get('purpose') == 'learning' else s.get('native_session_id')
+            log = path/'execution.jsonl'
+            if log.exists():
+                for line in log.read_text(encoding='utf-8').splitlines():
+                    try: event = json.loads(line)
+                    except ValueError: continue
+                    if event.get('type') == 'thread.started':
+                        item['native_session_id'] = event.get('thread_id'); break
+            execution = path/'execution-result.json'
+            if execution.exists():
+                result = json.loads(execution.read_text(encoding='utf-8'))
+                item.update(result={'execution':result}, elapsed_seconds=result.get('elapsed_seconds'))
+                if result.get('exit_status') not in (None, 0):
+                    item['status']='failed'
+            applied = path/'apply.json'
+            if applied.exists():
+                result = json.loads(applied.read_text(encoding='utf-8'))
+                from run_records import state
+                item.update(status=state(result.get('state')), result={**(item['result'] or {}),'publication':result}, error=result.get('error'))
+            elif s.get('run_path') == str(path):
+                exit_path=path/'exit.json'
+                if exit_path.exists():
+                    result=json.loads(exit_path.read_text(encoding='utf-8'))
+                    item.update(status='succeeded' if result.get('exit_code')==0 else 'failed' if result.get('exit_code') is not None else 'unknown',
+                                result=result,finished_at=result.get('at'))
+                else:
+                    item['status'] = 'running' if s['status'] == 'running' else 'unknown'
+            return item
+        root = s.get('runtime_refs', {}).get('learning_runs_root')
         if root:
-            records=[]
-            for path in sorted(Path(root).iterdir()):
-                if not path.is_dir():continue
-                record=dict(run_id=path.name,session_id=session_id,evidence=str(path),native_session_id=None,status='unknown',elapsed_seconds=None)
-                events=path/'execution.jsonl'
-                if events.exists():
-                    for line in events.read_text(encoding='utf-8').splitlines():
-                        try:event=json.loads(line)
-                        except ValueError:continue
-                        if event.get('type')=='thread.started':record['native_session_id']=event.get('thread_id');break
-                result=path/'execution-result.json'
-                if result.exists():
-                    data=json.loads(result.read_text(encoding='utf-8'))
-                    record.update(exit_status=data.get('exit_status'),elapsed_seconds=data.get('elapsed_seconds'),status='execution_succeeded' if data.get('exit_status')==0 else 'execution_failed')
-                record['publication_record']=str(path/'apply.json') if (path/'apply.json').exists() else None
-                records.append(record)
-            return records
+            return [read(path) for path in sorted(Path(root).iterdir()) if path.is_dir()]
         if s.get('run_path'):
-            return [{'run_id':s['run_path'],'session_id':session_id,'evidence':s['run_path'],'status':s['status'],'native_session_id':s.get('native_session_id'),'configuration':s.get('runtime_refs',{})}]
-        return [dict(t,run_id=t['request_id']) for t in self.sessions.history(session_id)]
+            path=Path(s['run_path'])
+            records=[read(path)]
+            background=path/'background-runs.jsonl'
+            if background.exists():
+                latest={}
+                for line in background.read_text(encoding='utf-8').splitlines():
+                    try:item=json.loads(line)
+                    except ValueError:continue
+                    item['parent_session_id']=session_id
+                    latest[item['run_id']]=item
+                records.extend(latest.values())
+            return records
+        return [from_turn(s, turn) for turn in self.sessions.history(session_id)]
 
     def effective(self, session_id):
         session = self.sessions.get(session_id)

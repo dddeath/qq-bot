@@ -39,10 +39,31 @@ def wait_for_event(upstream, arguments, wake, *, max_wait_seconds=3600,
 
 class NativeCompletions:
     """Tail only children of this native thread; do not replay historical results."""
-    def __init__(self, root, thread):
+    def __init__(self, root, thread, record_run=None):
         self.root, self.thread = root, thread
+        self.record_run = record_run
         self.files = {}
         self._scan(baseline=True)
+
+    def _record(self, state, path, status, timestamp, payload):
+        if self.record_run is None:
+            return
+        from datetime import datetime
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'sessions'))
+        from run_records import receipt
+        def seconds(value):
+            if not value:return None
+            try:return datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+            except (ValueError, TypeError):return None
+        item=receipt(dict(purpose='research',harness='codex'),
+                     state[0]+':'+str(state[2] or timestamp), status=status,
+                     started_at=seconds(state[2]), finished_at=None if status=='running' else seconds(timestamp),
+                     native_session_id=state[0], result=payload if status!='running' else None,
+                     evidence=str(path))
+        item['parent_native_session_id']=self.thread
+        self.record_run(item)
 
     def _scan(self, baseline=False):
         import json
@@ -76,6 +97,7 @@ class NativeCompletions:
                     payload = row.get('payload', {})
                     if row.get('type') == 'event_msg' and payload.get('type') == 'task_started':
                         state[2] = row.get('timestamp')
+                        self._record(state,path,'running',row.get('timestamp'),payload)
                     if row.get('type') == 'event_msg' and payload.get('type') in ('task_complete', 'turn_aborted'):
                         from datetime import datetime
                         elapsed = None
@@ -85,6 +107,7 @@ class NativeCompletions:
                                 elapsed = value if value >= 0 else None
                             except (ValueError, TypeError):
                                 pass
+                        self._record(state,path,'succeeded' if payload['type']=='task_complete' else 'cancelled',row.get('timestamp'),payload)
                         results.append({'agent_id': state[0], 'result': payload, 'timestamp': row.get('timestamp'),
                                         'started_at': state[2], 'elapsed_seconds': elapsed})
                         state[2] = None

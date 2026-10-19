@@ -5,6 +5,9 @@ import json, math, time
 import datetime as dt
 
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'sessions'))
+from run_records import recorded
 
 
 
@@ -13,6 +16,16 @@ DEFAULTS = json.loads((Path(__file__).resolve().parents[2]/'config/video-reading
 
 
 def explore_video(video, context, run, settings, decide, read, *, now=time.monotonic):
+    run=Path(run);run.mkdir(parents=True,exist_ok=False)
+    with recorded(run, purpose='research', harness='codex') as execution:
+        result=_explore_video(video, context, run, settings, decide, read, now=now)
+        execution['result']={'stop_reason':result['stop_reason'],'report':str(run/'report.json')}
+        if result.get('error') or result['stop_reason'] in ('decision_failed','invalid_decision'):
+            execution.update(status='failed',error=result.get('error',result['stop_reason']))
+        return result
+
+
+def _explore_video(video, context, run, settings, decide, read, *, now=time.monotonic):
 
     cfg=DEFAULTS | settings
 
@@ -34,7 +47,7 @@ def explore_video(video, context, run, settings, decide, read, *, now=time.monot
 
         if type(cfg[key]) is not int or not 1<=cfg[key]<=ceiling:raise ValueError('invalid_visual_budget')
 
-    run=Path(run);run.mkdir(parents=True,exist_ok=False)
+    run=Path(run)
 
     state=dict(video=video,context=context,reads=[],decisions=[])
 

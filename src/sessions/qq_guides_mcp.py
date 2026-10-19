@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import sys
 import hashlib
-from host_wait import host_text
+from host_wait import guide_text
 
 
 def handle(snapshot, request, *, host_wait=False):
@@ -37,7 +37,8 @@ def handle(snapshot, request, *, host_wait=False):
                     tools=cap['tools'], parameters=cap['parameters'], guide_sha256=cap['guide_sha256'],
                     section=section, sections=list(cap.get('sections',{})), guide=guide)
         if host_wait:
-            body['guide'] = host_text(body['guide'])
+            if args['capability'] == 'chat':
+                body['guide'] = guide_text(section or 'chat')
             body['delivery_mode'] = 'host_wait'
             body['delivered_guide_sha256'] = hashlib.sha256(body['guide'].encode('utf-8')).hexdigest()
         result = {'content': [{'type': 'text', 'text': json.dumps(body, ensure_ascii=False)}], 'structuredContent': body}
