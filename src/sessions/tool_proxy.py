@@ -19,9 +19,11 @@ def http_proxy(config):
     url=config['url'];parsed=urlparse(url)
     if parsed.scheme!='http' or parsed.hostname not in ('localhost','127.0.0.1','::1') or parsed.username or parsed.password:
         raise ValueError('Tulpa endpoint must be loopback HTTP')
-    headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream'}
+    headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream',**config.get('http_headers',{})}
     if config.get('token_file'):
         headers['Authorization']='Bearer '+Path(config['token_file']).read_text(encoding='utf-8').strip()
+    elif config.get('bearer_token_env_var'):
+        headers['Authorization']='Bearer '+os.environ[config['bearer_token_env_var']]
     opener=build_opener(ProxyHandler({}),NoRedirect())
     allowed=set(config['tools'])
     for line in sys.stdin:

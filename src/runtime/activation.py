@@ -63,10 +63,11 @@ class ActivationGate:
 
 class ActivationRouter:
     """Bot settings, independent group state. Caller retains original inbox rows."""
-    def __init__(self, bots):
+    def __init__(self, bots, *, state_path=None):
         self.bots = bots
         self.gates = {}
         self.decisions = {}
+        self.state_path = state_path
 
     def select(self, conversation, messages, now):
         account = conversation.split(':')[0]
@@ -75,9 +76,29 @@ class ActivationRouter:
             return messages
         gate = self.gates.setdefault(conversation, ActivationGate(config, account=account))
         decision = gate.evaluate(messages, now)
+        decision['observed_at'] = now
         self.decisions[conversation] = decision
+        if self.state_path:
+            self.publish_state()
         ids = set(decision['message_ids']) if decision['deliver'] else set()
         return [m for m in messages if m['id'] in ids]
+
+    def publish_state(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        path = Path(self.state_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = {'conversations': {cid: {'active': d['active'], 'observed_at': d['observed_at']}
+                                  for cid, d in list(self.decisions.items())}}
+        fd, name = tempfile.mkstemp(prefix=path.name+'.', dir=path.parent)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(body, f)
+            os.replace(name, path)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
 
 
 def select_pending(service, session, pending):
@@ -89,7 +110,8 @@ def select_pending(service, session, pending):
     if not path:
         return pending
     if not hasattr(service, '_activation_router'):
-        service._activation_router = ActivationRouter(json.loads(Path(path).read_text(encoding='utf-8-sig'))['bots'])
+        service._activation_router = ActivationRouter(json.loads(Path(path).read_text(encoding='utf-8-sig'))['bots'],
+            state_path=os.environ.get('QQ_BOT_ACTIVATION_STATE'))
     router = service._activation_router
     cid = session['conversation_id']
     if not router.bots.get(cid.split(':')[0], {}).get('enabled', False):

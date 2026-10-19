@@ -4,6 +4,7 @@ import json
 import re
 import time
 from pathlib import Path
+import qq_tools
 
 
 class ControlPlane:
@@ -45,6 +46,10 @@ class ControlPlane:
                 raise ValueError('learning session required')
         if kind == 'tool_profile' and not isinstance(body.get('servers'), dict):
             raise ValueError('servers required')
+        if kind == 'tool_profile':
+            qq_tools.configured(body, {})
+        if kind == 'bot' and body.get('tool_profile'):
+            qq_tools.configured(self.dereference(body['tool_profile'])['body'], body.get('qq_tools', {}))
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
             row = self.db.execute('SELECT version,body FROM configurations WHERE kind=? AND id=? ORDER BY version DESC LIMIT 1', (kind,id)).fetchone()
@@ -62,9 +67,11 @@ class ControlPlane:
             raise ValueError('source bot required')
         body = dict(account_id=str(account_id), bindings=bindings,
                     tool_profile=source['body']['tool_profile'], inherited_from=source_bot_ref,
-                    disabled_tools=disabled_tools or {})
+                    disabled_tools=copy.deepcopy(source['body'].get('disabled_tools',{})) if disabled_tools is None else disabled_tools)
         if persona_ref:
             body['persona_ref'] = persona_ref
+        if 'qq_tools' in source['body']:
+            body['qq_tools'] = copy.deepcopy(source['body']['qq_tools'])
         return self.put('bot',id,body)
 
     def bind(self, session_id, *, purpose, bot_ref=None, runtime_refs=None):
@@ -127,7 +134,9 @@ class ControlPlane:
         if str(bot['account_id']) != session.get('account_id'):
             raise ValueError('bot account mismatch')
         profile = self.dereference(bot['tool_profile'])['body']
-        bindings = dict(bot.get('bindings',{}),account_id=session['account_id'],group_id=session['group_id'])
+        qq = qq_tools.configured(profile, bot.get('qq_tools', {}))
+        bindings = {**bot.get('bindings',{}), **qq_tools.parameter_bindings(qq),
+                    'account_id':session['account_id'], 'group_id':session['group_id']}
         def expand(value):
             if isinstance(value,str):
                 def replace(match):
@@ -150,7 +159,18 @@ class ControlPlane:
             disabled=bot.get('disabled_tools',{}).get(name,[])
             cfg['tools']=[x for x in cfg.get('tools',[]) if x not in disabled]
             servers[name]=cfg
+        resolved_qq = qq_tools.resolve(qq, servers, account_id=session['account_id'], group_id=session['group_id']) if qq else None
+        if resolved_qq:
+            notes=bot.get('qq_guide_notes',{})
+            for name,cap in resolved_qq['capabilities'].items():
+                note=notes.get(name,{})
+                cap['guide']=expand(cap['guide']+'\n'+note.get('guide','')).strip()
+                cap['sections']={section:expand(text+'\n'+note.get('sections',{}).get(section,''))
+                                 for section,text in cap.get('sections',{}).items()}
+                cap['guide_sha256']=qq_tools.guide_hash(cap)
+            resolved_qq['startup']=expand(resolved_qq['startup']+'\n'+bot.get('qq_context','')).strip()
         return dict(session_id=session_id,bot_ref=session['bot_ref'],tool_profile_ref=bot['tool_profile'],
+                    qq_tools=resolved_qq,
                     servers=servers,unavailable=unavailable,persona_ref=bot.get('persona_ref'),
                     activation=copy.deepcopy(bot.get('activation', {'enabled':False})),
                     batching=copy.deepcopy(bot.get('batching', {})),
@@ -160,12 +180,17 @@ class ControlPlane:
 
     def export_tools(self, session_id, directory, *, python, proxy):
         effective=self.effective(session_id)
-        if self.sessions.get(session_id)['harness']!='antigravity':raise ValueError('export adapter not implemented for this harness')
         for name,c in effective['servers'].items():
             if not c.get('command') and not c.get('url'):raise ValueError('stdio or HTTP adapter required: '+name)
         root=Path(directory).resolve();root.mkdir(parents=True,exist_ok=False)
         snapshot=root/'tool-profile.json';mcp=root/'mcp_config.json'
         snapshot.write_text(json.dumps(effective,ensure_ascii=False,indent=2),encoding='utf-8')
-        servers={name:{'command':python,'args':[proxy,'--config',str(snapshot),'--server',name]} for name,c in effective['servers'].items() if c['tools']}
+        from qq_tool_runtime import server_configs
+        servers=server_configs(effective,snapshot,python=python,proxy=proxy)
         mcp.write_text(json.dumps({'mcpServers':servers},indent=2),encoding='utf-8')
-        return dict(snapshot=str(snapshot),mcp_config=str(mcp),allow=[f'mcp({name}/{tool})' for name,c in effective['servers'].items() for tool in c['tools']],unavailable=effective['unavailable'])
+        allow=[f'mcp({name}/{tool})' for name,c in effective['servers'].items() for tool in c['tools']]
+        if effective.get('qq_tools'):
+            if effective['qq_tools']['capabilities']:
+                allow.append('mcp(qq-guides/read_qq_tool_guide)')
+            (root/'qq-startup.md').write_text(effective['qq_tools']['startup'],encoding='utf-8')
+        return dict(snapshot=str(snapshot),mcp_config=str(mcp),allow=allow,unavailable=effective['unavailable'])

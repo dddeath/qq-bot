@@ -61,7 +61,7 @@ class NativeCompletions:
                     if spawn.get('parent_thread_id') != self.thread:
                         self.files[path] = None
                         continue
-                    self.files[path] = [meta.get('id'), path.stat().st_size if baseline else f.tell()]
+                    self.files[path] = [meta.get('id'), path.stat().st_size if baseline else f.tell(), None]
             state = self.files[path]
             if state is None:
                 continue
@@ -74,8 +74,20 @@ class NativeCompletions:
                     state[1] = f.tell()
                     row = json.loads(line)
                     payload = row.get('payload', {})
+                    if row.get('type') == 'event_msg' and payload.get('type') == 'task_started':
+                        state[2] = row.get('timestamp')
                     if row.get('type') == 'event_msg' and payload.get('type') in ('task_complete', 'turn_aborted'):
-                        results.append({'agent_id': state[0], 'result': payload, 'timestamp': row.get('timestamp')})
+                        from datetime import datetime
+                        elapsed = None
+                        if state[2] and row.get('timestamp'):
+                            try:
+                                value = (datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00')) - datetime.fromisoformat(state[2].replace('Z', '+00:00'))).total_seconds()
+                                elapsed = value if value >= 0 else None
+                            except (ValueError, TypeError):
+                                pass
+                        results.append({'agent_id': state[0], 'result': payload, 'timestamp': row.get('timestamp'),
+                                        'started_at': state[2], 'elapsed_seconds': elapsed})
+                        state[2] = None
         return {'event': 'background_results', 'results': results, 'messages': []} if results else None
 
     def __call__(self):

@@ -1,6 +1,10 @@
 """Run the existing Codex conversation with passive timestamped stdout evidence."""
 import argparse,datetime,json,os,subprocess,time,urllib.request
 from pathlib import Path
+import sys
+import tomllib
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'sessions'))
+from qq_tool_runtime import load_snapshot, startup_prompt, codex_overrides
 
 MODEL='gpt-6.1-sol'
 EFFORT='low'
@@ -14,6 +18,15 @@ def codex_command(prompt,thread=None,*,event_wait=False,policy=None):
     args=['-a','never','-m',MODEL,'-c','model_reasoning_effort="'+EFFORT+'"','exec','--skip-git-repo-check','--sandbox','read-only','--color','never','--json']
     if thread:args+=['resume',thread]
     args[0:0]=['-c','model_context_window='+str(window),'-c','model_auto_compact_token_limit='+str(int(window*.9)),'-c','service_tier='+json.dumps(tier),'-c','web_search="live"','-c','features.image_generation=true']
+    snapshot_path=(policy or {}).get('tool_snapshot')
+    if snapshot_path:
+        if event_wait:
+            raise ValueError('managed QQ tools use context-control waiting, not the legacy event-wait adapter')
+        home=Path(os.environ.get('CODEX_HOME',str(Path.home()/'.codex')))
+        config=tomllib.loads((home/'config.toml').read_text(encoding='utf-8')) if (home/'config.toml').exists() else {}
+        prompt=startup_prompt(prompt,load_snapshot(snapshot_path))
+        for key,value in codex_overrides(snapshot_path,existing_servers=config.get('mcp_servers',{})).items():
+            args[0:0]=['-c',key+'='+json.dumps(value)]
     if event_wait:
         if not thread:
             raise ValueError('event wait requires the existing native thread')
@@ -58,4 +71,21 @@ def run_chat(run,thread,*,event_wait=False,policy=None):
         except Exception as e:(run/('stop-error-'+sid+'.txt')).write_text(type(e).__name__)
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('run',type=Path);p.add_argument('--thread');p.add_argument('--event-wait',action='store_true');p.add_argument('--policy',type=Path);a=p.parse_args();os.umask(0o077);run_chat(a.run,a.thread,event_wait=a.event_wait,policy=json.loads(a.policy.read_text()) if a.policy else None)
+    p=argparse.ArgumentParser();p.add_argument('run',type=Path);p.add_argument('--thread');p.add_argument('--event-wait',action='store_true');p.add_argument('--policy',type=Path)
+    p.add_argument('--context-control',action='store_true')
+    p.add_argument('--tulpa-session');p.add_argument('--conversation');p.add_argument('--activation-state',type=Path)
+    p.add_argument('--tool-snapshot',type=Path)
+    a=p.parse_args();os.umask(0o077)
+    if a.context_control and not all((a.thread,a.tulpa_session,a.conversation,a.activation_state)):
+        p.error('--context-control requires --thread, --tulpa-session, --conversation and --activation-state')
+    if a.context_control and a.event_wait:
+        p.error('--context-control owns waiting; select only one runner mode')
+    policy=json.loads(a.policy.read_text()) if a.policy else None
+    if a.tool_snapshot:
+        policy={**(policy or {}),'tool_snapshot':str(a.tool_snapshot.resolve())}
+    if a.context_control:
+        from app_server_runner import run_context_chat
+        run_context_chat(a.run,a.thread,policy=policy,tulpa_session=a.tulpa_session,
+                         conversation=a.conversation,activation_state=a.activation_state)
+    else:
+        run_chat(a.run,a.thread,event_wait=a.event_wait,policy=policy)

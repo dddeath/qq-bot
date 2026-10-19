@@ -1,12 +1,26 @@
 """CLI boundary: preserve native events and normalize only proven results."""
 import os,json,subprocess,time,uuid,datetime
 from pathlib import Path
+from qq_tool_runtime import load_snapshot, startup_prompt, codex_overrides
 class Harnesses:
  def __init__(self,configs,evidence):self.configs=configs;self.evidence=Path(evidence)
  def __call__(self,session,prompt):
   h=session['harness'];config_ref=session.get('runtime_refs',{}).get('harness_config')
   c=json.loads(Path(config_ref).read_text(encoding='utf-8')) if config_ref else self.configs[h]
   cmd=list(c['command']);native=session.get('native_session_id')
+  snapshot_path=session.get('runtime_refs',{}).get('tool_snapshot')
+  if snapshot_path:
+   snapshot=load_snapshot(snapshot_path,session_id=session['session_id'],conversation=session['account_id']+':group:'+session['group_id'])
+   prompt=startup_prompt(prompt,snapshot)
+   if h=='codex':
+    import tomllib
+    home=Path(c.get('env',{}).get('CODEX_HOME',os.environ.get('CODEX_HOME',str(Path.home()/'.codex'))))
+    base=tomllib.loads((home/'config.toml').read_text(encoding='utf-8')) if (home/'config.toml').exists() else {}
+    for key,value in codex_overrides(snapshot_path,existing_servers=base.get('mcp_servers',{})).items():cmd+=['-c',key+'='+json.dumps(value)]
+   elif h=='antigravity':
+    installed=json.loads((Path(c['cwd'])/'.agents/mcp_config.json').read_text(encoding='utf-8'))
+    exported=json.loads((Path(snapshot_path).parent/'mcp_config.json').read_text(encoding='utf-8'))
+    if installed!=exported:raise ValueError('Antigravity workspace must use the exported tool snapshot MCP configuration')
   if h=='antigravity':
    cmd+=['--model',session['model'],'--effort',session['effort'],'--output-format','stream-json']
    if native:cmd+=['--conversation',native]

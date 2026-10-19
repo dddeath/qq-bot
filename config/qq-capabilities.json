@@ -1,0 +1,63 @@
+{
+  "chat": {
+    "summary": "收发消息；初始化与异常恢复读 session 子章节，知识和检索读 research 子章节",
+    "guide": "chat.md",
+    "sections": {
+      "session": "session.md",
+      "research": "research.md"
+    },
+    "tools": [
+      "list_chat_personas",
+      "start_chat_session",
+      "get_chat_session",
+      "wait_chat_messages",
+      "plan_chat_reply",
+      "send_chat_reply"
+    ]
+  },
+  "media": {
+    "summary": "需要看图、选图、发表情或收藏时读取；明确生图请求读 image-generation 子章节",
+    "guide": "media.md",
+    "sections": {
+      "image-generation": "image-generation.md"
+    },
+    "tools": [
+      "read_chat_image",
+      "list_chat_stickers",
+      "read_chat_sticker",
+      "send_chat_sticker",
+      "collect_chat_sticker",
+      "note_chat_sticker"
+    ]
+  },
+  "profile": {
+    "summary": "需要修改自身头像、昵称、签名、状态或群名片时读取",
+    "guide": "profile.md",
+    "tools": [
+      "get_self_qq_capabilities",
+      "get_self_qq_profile",
+      "set_self_qq_avatar",
+      "set_self_qq_nickname",
+      "set_self_qq_signature",
+      "set_self_qq_status",
+      "set_self_qq_group_card"
+    ]
+  },
+  "interaction": {
+    "summary": "收到戳一戳或需要戳回时读取",
+    "guide": "interaction.md",
+    "tools": [
+      "poke_chat_member"
+    ]
+  },
+  "group_files": {
+    "summary": "主控明确提出群文件上传、下载或列表请求时读取",
+    "guide": "group-files.md",
+    "tools": [
+      "list_group_files",
+      "download_group_file",
+      "list_group_upload_assets",
+      "upload_group_file"
+    ]
+  }
+}
