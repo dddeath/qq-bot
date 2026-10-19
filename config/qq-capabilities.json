@@ -23,6 +23,7 @@
     },
     "tools": [
       "read_chat_image",
+      "read_external_image",
       "list_chat_stickers",
       "read_chat_sticker",
       "send_chat_sticker",

@@ -60,6 +60,8 @@ description: QQ 群聊需要联网补查资料、查看视频画面，或群友�
 
 ## 子代理交付
 
+查到外部图片直链且需要看画面时，调用 read_external_image(url)，读取返回的图片内容。群消息图片使用 read_chat_image(session_id,event_id,index)。保留图片最终地址及读取结果供主会话核对，找到链接不等于已读到画面。
+
 
 
 搜索统一按资料类型选工具：B 站视频、UP 投稿或动态、主播切片、游戏社区用法优先用 bilibili_readonly；官方文档、天气、新闻与跨站核对使用原生 web_search。B 站视频检索用 search_bilibili_videos；作者检索用 search_bilibili_creators，按 UID 用 get_bilibili_creator_content 读取；视频正文按需用 get_video_metadata、get_video_transcript、get_video_comments 或 get_video_chapters。给定 BV 时直接读取。搜索结果不足时组合两路资料，沿用一个后台任务交回主会话。

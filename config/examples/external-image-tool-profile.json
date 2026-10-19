@@ -1,0 +1,15 @@
+{
+  "kind": "tool_profile",
+  "id": "external-image-tools",
+  "expected_version": 0,
+  "body": {
+    "servers": {
+      "external-image": {
+        "command": "/absolute/venv/bin/python",
+        "args": ["/absolute/release/src/runtime/external_image.py"],
+        "harnesses": ["codex", "antigravity"],
+        "tools": ["read_external_image"]
+      }
+    }
+  }
+}
