@@ -34,6 +34,8 @@ description: QQ 群聊需要联网补查资料、查看视频画面，或群友�
 
 ### 阅读轨迹协议
 
+工具列表提供 `begin_reading_task` 时，先用原请求建立任务；同一任务跨检索工具复用返回的 task_id。每次读取填写 `_reading`：task_id、purpose（targeted/explore）、reason（本次要查什么）、relation（与原目标的关系）；后续读取在 prior_observation 简述上一轮实际新增信息。按工具返回的剩余预算决定下一步，结束时用 `finish_reading_task` 记录 stop_reason、reason 和 conclusion。此入口自动记录实际结果、图片和耗时，已记录的 MCP 读取省略下面的 commentary 标记；原生网页搜索仍按下面协议记录。
+
 
 
 以下记录只在子代理 commentary 输出，不发送到 QQ。每条标记单独占一条 commentary，JSON 使用实际值；保存可核对的决策摘要，不输出内部思维过程。

@@ -9,3 +9,27 @@
 `src/runtime/native_reading_traces.py` 汇集原生子代理调用、返回、耗时和当时的读取目的；实际返回的图片块落盘并关联调用标识。缺失目的、结果或图片转换失败保留状态，不补猜。每轮证据使用独立目录。
 
 `src/runtime/latency.py` 与 `latency_detail.py` 统计消息、模型、工具和发送回执阶段。重叠调用不能直接相加为端到端时间；缺少的时间保持未知。
+
+## 独立回放检索
+
+回放由独立学习会话直接调用只读资料工具，不依赖主聊天派出子代理。`learning_research.py` 从原调用参数中提取 BV 候选；旧记录缺少 `video` 字段仍可重查，但不据此补写旧读取目的。
+
+模型先读取基础概览，再自行选择网页搜索、B 站字幕、评论及楼中楼、弹幕、视频画面和外部图片。工具通过 `learning_research_mcp.py` 开放，沿用已有资料服务，不开放 QQ 写入工具。每次调用携带本次读取目的和理由。
+
+预算读取 `reading_review`：基础概览最多 3 次；其余调用受 `max_read_units` 限制，失败也计数；探索调用受 `exploration_budget_ratio` 限制；整个检索进程受 `extension_seconds` 限制。视频准备、抽帧及图片读取分别计数。原 JSON 决策循环的 `max_decisions` 不用于原生工具会话，原生会话由读取次数与总时限约束。网页搜索先通过 `declare_web_search` 预留同一预算；运行器检测未预留搜索后终止本轮，保留实际事件。
+
+每轮保存输入投影、实际命令、工具参数与返回、图片、读取目的、耗时和模型执行日志。图片作为真实像素独立输入评审，base64 不占用文字材料的截断预算。原始轨迹不变，缺失的历史依据仍标为未知；评审建议不自动应用。
+
+## 检索工具入口轨迹
+
+只读检索服务的冻结工具配置可设置 `reading_trace`，字段为 `root`、`scope`、`max_read_units`、`exploration_budget_ratio`、`timeout_seconds`。同一任务跨服务使用相同根目录和 task_id；`scope` 对应每日评审的 `audit_scope`。未配置的服务保持原调用契约。
+
+`tool_proxy.py` 为此类服务提供 `begin_reading_task` 和 `finish_reading_task`，读取工具增加 `_reading` 参数，用于记录调用前的目的、理由、目标关联和上一轮观察。代理剥离该参数后调用原服务，将真实结果、图片、耗时和剩余预算写入 `research_trace.py` 管理的独立任务目录。关闭任务后停止接受新读取。
+
+任务目录包含 `context.json`、共享预算 `budget.db`、逐次 `read-NNN.json` 与图片、`completion.json` 和供学习读取的 `report.json`。未结束任务的停止原因留空。该报告明确标记覆盖范围为已接入的 MCP 调用；原生网页搜索及未接入工具仍依赖原生轨迹采集，不能据此报告声称覆盖整条检索过程。
+
+## 评审输入与完成状态
+
+评审完整保留预算内的文字和读取记录，不按单字段长度或列表项数裁剪。`reading_review.max_input_chars` 控制总输入预算；超限返回 `audit_input_budget_exceeded`，保留原证据，不启动该次评审。图片以文件参数单独交付。
+
+每个任务的 `assessment_complete` 仅在目的偏差、探索不足、定向不足三项均获得有效评分时为真。全部输入任务均完成后，批次 `all_assessments_complete` 才为真；空批次、未处理任务、执行失败和缺项评分均不满足验收。

@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.request import Request, build_opener, ProxyHandler, HTTPRedirectHandler
 from urllib.parse import urlparse
@@ -60,6 +61,15 @@ def main():
         http_proxy(config, host_wait=args.host_wait)
         return
     allowed=set(config['tools'])
+    trace = None
+    if config.get('reading_trace'):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'runtime'))
+        from research_trace import ResearchTrace, CONTROL_TOOLS
+        from learning_research import ALLOWED
+        if not allowed.issubset(ALLOWED):
+            raise ValueError('reading trace requires read-only research tools')
+        trace = ResearchTrace(config['reading_trace'])
+        allowed.update(CONTROL_TOOLS)
     child=subprocess.Popen([config['command'],*config.get('args',[])],env=dict(os.environ,**config.get('env',{})),
                            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=sys.stderr,text=True,encoding='utf-8',bufsize=1)
     try:
@@ -69,11 +79,33 @@ def main():
             if method not in ('initialize','ping','notifications/initialized','tools/list','tools/call') or (method=='tools/call' and request.get('params',{}).get('name') not in allowed):
                 if 'id' in request:print(json.dumps({'jsonrpc':'2.0','id':request['id'],'error':{'code':-32601,'message':'Tool or method not enabled in this profile'}}),flush=True)
                 continue
+            token = None
+            started = time.monotonic()
+            if trace and method == 'tools/call':
+                params = request['params']
+                try:
+                    if params['name'] in CONTROL_TOOLS:
+                        result = trace.control(params['name'], params.get('arguments', {}))
+                        print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{
+                            'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}}),flush=True)
+                        continue
+                    token, arguments = trace.prepare(params['name'], params.get('arguments', {}))
+                    request['params'] = {**params, 'arguments': arguments}
+                    line = json.dumps(request, ensure_ascii=False)+'\n'
+                except (ValueError, FileExistsError) as exc:
+                    trace.reject(params['name'], params.get('arguments', {}), exc)
+                    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{
+                        'isError':True,'content':[{'type':'text','text':str(exc)}]}}),flush=True)
+                    continue
             child.stdin.write(line);child.stdin.flush()
             if 'id' not in request:continue
             while True:
                 response_line=child.stdout.readline()
-                if not response_line:raise RuntimeError('upstream MCP closed before response')
+                if not response_line:
+                    if token:
+                        trace.complete(token, {'error':{'message':'upstream MCP closed before response'}},
+                                       time.monotonic()-started)
+                    raise RuntimeError('upstream MCP closed before response')
                 response=json.loads(response_line)
                 if response.get('id')!=request['id']:
                     # No sampling, elicitation or new upstream capabilities are delegated.
@@ -82,7 +114,15 @@ def main():
                     continue
                 if method=='tools/list' and 'result' in response:
                     response['result']['tools']=[t for t in response['result'].get('tools',[]) if t['name'] in allowed]
+                    if trace:
+                        response['result']['tools']=trace.schemas(response['result']['tools'])
                 if method=='initialize' and 'result' in response:response['result']['capabilities']={'tools':{}}
+                if token:
+                    trace.complete(token, response, time.monotonic()-started)
+                    if 'result' in response:
+                        response['result'].setdefault('content', []).insert(0, {
+                            'type':'text', 'text':json.dumps({'read_id':json.loads(token.read_text(encoding='utf-8'))['read_id'],
+                                                           'budget_remaining':trace.remaining(token.parent)})})
                 print(json.dumps(response,ensure_ascii=False),flush=True)
                 break
     finally:
