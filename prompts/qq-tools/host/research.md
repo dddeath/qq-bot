@@ -18,4 +18,4 @@
 
 
 
-旧的 claim_chat_learning / submit_chat_learning 流程已关闭，聊天继续沿原始 wait/get/plan/send 运行。学习读取工具只返回发布后的内容，审核和可信度材料由独立学习层保存。
+旧的 claim_chat_learning / submit_chat_learning 流程已关闭，聊天由宿主交付消息，模型按需读取、规划和发送；处理完结束当前轮次。学习读取工具只返回发布后的内容，审核和可信度材料由独立学习层保存。

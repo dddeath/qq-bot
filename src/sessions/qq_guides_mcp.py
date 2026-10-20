@@ -39,6 +39,8 @@ def handle(snapshot, request, *, host_wait=False):
         if host_wait:
             if args['capability'] == 'chat':
                 body['guide'] = guide_text(section or 'chat')
+            elif args['capability'] == 'group_files':
+                body['guide'] = guide.replace('使用 wait_chat_messages 实际交付的', '使用宿主实际交付的')
             body['delivery_mode'] = 'host_wait'
             body['delivered_guide_sha256'] = hashlib.sha256(body['guide'].encode('utf-8')).hexdigest()
         result = {'content': [{'type': 'text', 'text': json.dumps(body, ensure_ascii=False)}], 'structuredContent': body}
