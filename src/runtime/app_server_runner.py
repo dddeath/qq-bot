@@ -199,7 +199,7 @@ def run_context_chat(run, thread, *, policy, tulpa_session, conversation, activa
             (run/'codex.pid').write_text(str(rpc.process.pid))
             rpc.call('initialize', {'clientInfo': {'name': 'qq-context-runner', 'version': '1'}})
             rpc.send({'method': 'initialized', 'params': {}})
-            native = CodexSession(rpc, thread)
+            native = CodexSession(rpc, thread, record=record)
             native.configure(prompt+HOST_WAIT_INSTRUCTIONS,
                 cwd=str(run.resolve()), model='gpt-6.1-sol', approvalPolicy='never', sandbox='read-only',
                 serviceTier='priority' if context.get('fast', False) else 'default')

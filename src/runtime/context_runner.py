@@ -1,5 +1,6 @@
 """Host-owned waiting and safe between-turn compaction for Codex sessions."""
 from context_control import CompactionPolicy
+from codex_session_control import ServerOverloaded
 import hashlib
 import json
 
@@ -34,6 +35,8 @@ class ChatLoop:
             try:
                 result = self.session.compact()
                 self.record(dict(event='proactive_compaction', reason=reason, result=result))
+            except ServerOverloaded as error:
+                self.record(dict(event='compaction_overload', turn_id=error.turn_id, action='continue_chat'))
             finally:
                 self.policy.completed()
 
@@ -72,8 +75,9 @@ class ChatLoop:
             self.maintain()
         if meaningful:
             result = self.session.run_turn(body if blocks is None else {'payload': body, 'content': blocks})
-            if result['status'] != 'completed':
+            if result['status'] not in ('completed', 'overload_abandoned'):
                 raise RuntimeError('chat turn incomplete; acknowledgement retained')
+            self.record(dict(event='chat_turn_result', result=result))
             self.handled.update(keys)
         if not meaningful and event not in ('idle', 'messages', 'background_results', 'control'):
             self.retry_delay = 10
