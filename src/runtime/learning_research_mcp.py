@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import time
 from learning_research import ReadBudget, ALLOWED
+from research_trace import ResearchTrace
 
 async def main(config_path):
     from mcp import ClientSession, StdioServerParameters
@@ -16,6 +17,7 @@ async def main(config_path):
     from mcp.server.stdio import stdio_server
     from mcp.types import Tool, TextContent
     cfg=json.loads(Path(config_path).read_text(encoding='utf-8'));root=Path(cfg['folder'])
+    trace=ResearchTrace(cfg['trace']);task_id=cfg['task_id'];root=trace.folder(task_id)
     budget=ReadBudget(root/'budget.db');app=Server('learning-reads');available={};schemas=[]
     async with AsyncExitStack() as stack:
         for name,c in cfg['servers'].items():
@@ -37,32 +39,19 @@ async def main(config_path):
             args=dict(arguments);purpose=args.pop('reading_purpose',None);reason=args.pop('reading_reason',None)
             if name not in available and name!='declare_web_search':raise ValueError('read_tool_not_enabled')
             tool='web_search' if name=='declare_web_search' else name
-            index=budget.reserve(tool,purpose,reason);started=time.time()
-            record={'read_id':index,'tool':tool,'arguments':args,'action':{'kind':tool,'purpose':purpose},'purpose_record':{'question':reason,'source':'learning_model'},'started_at':started,'result':{'status':'pending','images':[]}}
-            path=root/f'read-{index:03d}.json';path.write_text(json.dumps(record,ensure_ascii=False),encoding='utf-8')
-            try:
-                if name=='declare_web_search':
-                    result=[TextContent(type='text',text=f'Web search reserved as read_id={index}. Perform one search now.')]
-                    record['result']['status']='reserved'
-                else:
-                    with budget.db() as db:deadline=db.execute('select deadline from settings').fetchone()[0]
-                    reply=await asyncio.wait_for(available[name].call_tool(name,args),max(.01,deadline-time.time()))
-                    result=reply.content;record['result']['status']='error' if reply.isError else 'ok'
-                    record['result']['text']='\n'.join(c.text for c in result if c.type=='text')
-                    for n,c in enumerate(result):
-                        if c.type=='image':
-                            ext={'image/png':'png','image/jpeg':'jpg','image/webp':'webp'}.get(c.mimeType,'img')
-                            p=root/f'read-{index:03d}-image-{n}.{ext}';p.write_bytes(base64.b64decode(c.data,validate=True))
-                            record['result']['images'].append({'path':str(p),'mime_type':c.mimeType})
-                with budget.db() as db:
-                    rows=db.execute("select overview from calls").fetchall()
-                    units=db.execute("select units from settings").fetchone()[0]
-                return [TextContent(type='text',text=json.dumps({'read_id':index,'remaining_read_units':max(0,units-sum(not x[0] for x in rows))})),*result]
-            except Exception as exc:
-                record['result'].update(status='error',error=str(exc));raise
-            finally:
-                record['finished_at']=time.time();record['elapsed_seconds']=time.time()-started
-                path.write_text(json.dumps(record,ensure_ascii=False,indent=2),encoding='utf-8')
+            reading={'task_id':task_id,'purpose':purpose,'reason':reason,'relation':args.pop('reading_relation',reason)}
+            if name=='declare_web_search':
+                path,_=trace.prepare('web_search',{'_reading':reading})
+                record=json.loads(path.read_text(encoding='utf-8'));index=record['read_id']
+                # Actual native result is attached by the owning executor, never by the model.
+                return [TextContent(type='text',text=json.dumps({'read_id':index,'budget_remaining':trace.remaining(root)}))]
+            async def invoke(tool,arguments):
+                reply=await available[tool].call_tool(tool,arguments)
+                return {'result':reply.model_dump(mode='json',exclude_none=True)}
+            response=await trace.execute(name,{**args,'_reading':reading},invoke)
+            from mcp.types import CallToolResult
+            reply=CallToolResult.model_validate(response['result'])
+            return [TextContent(type='text',text=json.dumps({'budget_remaining':trace.remaining(root)})),*reply.content]
         async with stdio_server() as (read,write):
             await app.run(read,write,app.create_initialization_options())
 

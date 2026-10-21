@@ -99,9 +99,16 @@ def autonomous_research(original,folder,limits,settings):
     external=Path(__file__).with_name('external_image.py')
     if external.exists():
         servers['external_image']={'command':settings.get('reading_review',{}).get('python',sys.executable),'args':[str(external)]}
-    budget=ReadBudget(folder/'budget.db',limits['max_read_units'],limits['exploration_budget_ratio'],limits['timeout_seconds'])
-    (folder/'gateway.json').write_text(json.dumps({'servers':servers,'folder':str(folder.resolve())}),encoding='utf-8')
+    from research_trace import ResearchTrace
     payload=research_input(original)
+    trace_config={'root':str(folder/'tasks'),'scope':original.get('context',{}).get('audit_scope','learning'),
+                  'max_read_units':limits['max_read_units'],'exploration_budget_ratio':limits['exploration_budget_ratio'],
+                  'timeout_seconds':limits['timeout_seconds']}
+    trace=ResearchTrace(trace_config)
+    goal=payload['original']['goal_basis']['text']
+    task_id=trace.begin(goal,video=original.get('video'),source={'kind':'review_extension','original_task_id':original.get('task_id')})
+    task_folder=trace.folder(task_id);budget=ReadBudget(task_folder/'budget.db')
+    (folder/'gateway.json').write_text(json.dumps({'servers':servers,'folder':str(folder.resolve()),'trace':trace_config,'task_id':task_id}),encoding='utf-8')
     payload['budget']=limits
     (folder/'input.json').write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding='utf-8')
     cmd=['codex','-a','never','-m',settings.get('reading_review',{}).get('model','gpt-6-astra'),
@@ -145,15 +152,23 @@ def autonomous_research(original,folder,limits,settings):
         try:events.append(json.loads(line))
         except ValueError:pass
     web_events=[e for e in events if e.get('type')=='item.completed' and e.get('item',{}).get('type')=='web_search']
-    reserved=sorted(p for p in folder.glob('read-*.json') if json.loads(p.read_text()).get('tool')=='web_search')
-    for path,event in zip(reserved,web_events):
-        row=json.loads(path.read_text());row['result']={'status':'native_result_recorded','images':[],'native_event':event}
-        path.write_text(json.dumps(row,ensure_ascii=False),encoding='utf-8')
+    # Native events lack the reservation's read_id; retain them without inferred pairing.
+    if web_events:
+        (task_folder/'unassociated-native-events.json').write_text(
+            json.dumps(web_events,ensure_ascii=False,indent=2),encoding='utf-8')
+    for path in task_folder.glob('read-*.json'):
+        row=json.loads(path.read_text(encoding='utf-8'))
+        if row['result']['status']=='pending':
+            row['result']={'status':'missing_output','images':[]};row['elapsed_seconds']=None
+            row['missing_reason']='native_event_read_id_unavailable' if row['tool']=='web_search' else 'no_completion_recorded'
+            path.write_text(json.dumps(row,ensure_ascii=False),encoding='utf-8')
     reads=[]
-    for path in sorted(folder.glob('read-*.json')):
+    for path in sorted(task_folder.glob('read-*.json')):
         row=json.loads(path.read_text(encoding='utf-8'));row['read_id']=len(reads)+1;reads.append(row)
     result={'status':'completed' if code==0 else 'partial','reads':reads,'stop_reason':stop or ('completed' if code==0 else 'model_failed'),
             'summary':(folder/'answer.txt').read_text(encoding='utf-8') if (folder/'answer.txt').exists() else '',
             'elapsed_seconds':execution['elapsed_seconds'],'video_candidates':payload['video_candidates']}
+    structured=trace.finish(task_id,result['stop_reason'],stop or 'model_execution_ended',result['summary'] or 'No final report returned.')
+    result={**structured,**result}
     (folder/'report.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
     return result

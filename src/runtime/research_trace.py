@@ -1,4 +1,5 @@
 """Opt-in tool-boundary evidence for scoped research tasks."""
+import asyncio
 import base64
 import datetime as dt
 import json
@@ -30,7 +31,7 @@ class ResearchTrace:
             raise ValueError('unknown_reading_task')
         return folder
 
-    def begin(self, goal, video=None):
+    def begin(self, goal, video=None, source=None):
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('reading_goal_required')
         task_id = uuid.uuid4().hex
@@ -42,11 +43,12 @@ class ResearchTrace:
                 or not 0 <= limits['exploration_budget_ratio'] <= 1 or limits['timeout_seconds'] <= 0):
             raise ValueError('invalid_reading_budget')
         context = dict(goal=goal, video=video, task_mode='reading', audit_scope=self.config['scope'],
-                       task_source='model_declared_at_task_entry', budget=limits,
+                       task_source='task_entry', request_source=source, budget=limits,
                        recorded_at=dt.datetime.now(dt.timezone.utc).isoformat())
         (folder / 'context.json').write_text(json.dumps(context, ensure_ascii=False), encoding='utf-8')
         ReadBudget(folder / 'budget.db', limits['max_read_units'],
                    limits['exploration_budget_ratio'], limits['timeout_seconds'])
+        self.report(folder)
         return task_id
 
     def remaining(self, folder):
@@ -104,6 +106,22 @@ class ResearchTrace:
         write_record(path, record)
         self.report(path.parent)
 
+    async def execute(self, tool, arguments, invoke):
+        """Execute one model-selected read; the transport supplies actual MCP output."""
+        try:
+            path, args = self.prepare(tool, arguments)
+        except ValueError as exc:
+            self.reject(tool, arguments, exc)
+            raise
+        started = time.monotonic()
+        try:
+            response = await asyncio.wait_for(invoke(tool, args), self.remaining(path.parent)['seconds'])
+        except Exception as exc:
+            self.complete(path, {'error': {'message': str(exc), 'type': type(exc).__name__}}, time.monotonic()-started)
+            raise
+        self.complete(path, response, time.monotonic()-started)
+        return response
+
     def reject(self, tool, arguments, error):
         purpose = arguments.get('_reading') or {}
         try:
@@ -135,13 +153,17 @@ class ResearchTrace:
         context = json.loads((folder / 'context.json').read_text(encoding='utf-8'))
         reads = [json.loads(p.read_text(encoding='utf-8')) for p in sorted(folder.glob('read-*.json'))]
         completion = json.loads((folder / 'completion.json').read_text(encoding='utf-8')) if (folder / 'completion.json').exists() else None
-        report = dict(recorded_at=context['recorded_at'], captured_at=dt.datetime.now(dt.timezone.utc).isoformat(),
+        report = dict(schema_version=1, record_origin='exploration_executor', task_id=folder.name,
+                      recorded_at=context['recorded_at'], captured_at=dt.datetime.now(dt.timezone.utc).isoformat(),
                       context=context, user_request=context['goal'], video=context['video'], reads=reads,
                       decisions=[{'read_id': r['read_id'], 'purpose_record': r['purpose_record'],
                                   'budget_remaining': r['budget_before']} for r in reads],
                       completion=completion, stop_reason=completion['stop_reason'] if completion else None,
                       rejected_calls=[json.loads(p.read_text(encoding='utf-8')) for p in sorted(folder.glob('rejected-*.json'))],
-                      trace_coverage='instrumented_mcp_calls_only')
+                      trace_coverage='executor_calls',
+                      limitations=([f"read_{r['read_id']}:{r['result']['status']}" for r in reads
+                                    if r['result']['status'] in ('pending', 'missing_output', 'unassociated_native_event')]
+                                   + ([] if completion else ['task_not_finished'])))
         # Separate proxies may finish reads concurrently; each evidence file remains authoritative.
         staging = folder / ('report-' + uuid.uuid4().hex + '.tmp')
         staging.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -163,11 +185,11 @@ class ResearchTrace:
             result.append(tool)
         for name, description, fields, required in [
             ('begin_reading_task', 'Start one research trace with the original user goal; returns task_id and budget.',
-             ['goal', 'video'], ['goal']),
+             ['goal', 'video', 'source'], ['goal']),
             ('finish_reading_task', 'Record why reading stops and the actual conclusion after all reads finish.',
              ['task_id', 'stop_reason', 'reason', 'conclusion'], ['task_id', 'stop_reason', 'reason', 'conclusion'])]:
             result.append(dict(name=name, description=description, inputSchema={
-                'type': 'object', 'properties': {k: {'type': 'string'} for k in fields},
+                'type': 'object', 'properties': {k: ({'type': 'object'} if k == 'source' else {'type': ['string','null']} if k == 'video' else {'type': 'string'}) for k in fields},
                 'required': required, 'additionalProperties': False}))
         return result
 

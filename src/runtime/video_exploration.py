@@ -177,7 +177,7 @@ def _explore_video(video, context, run, settings, decide, read, *, now=time.mono
 
     budget.update(remaining_seconds=max(0,cfg['timeout_seconds']-(now()-started)),remaining_decisions=cfg['max_decisions']-len(state['decisions']),targeted_remaining=budget['targeted_limit']-budget['targeted_used'],exploration_remaining=budget['exploration_limit']-budget['exploration_used'])
 
-    result={**state,'recorded_at':dt.datetime.now(dt.timezone.utc).isoformat(),'budget':budget,'stop_reason':stop,'elapsed_seconds':now()-started}
+    result={**state,'record_origin':'exploration_executor','task_id':run.name,'recorded_at':dt.datetime.now(dt.timezone.utc).isoformat(),'budget':budget,'stop_reason':stop,'elapsed_seconds':now()-started}
 
     (run/'report.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
 

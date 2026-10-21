@@ -72,7 +72,8 @@ def select_daily_reports(root,day,scope):
    stamp=dt.datetime.fromisoformat(r['recorded_at'])
    if stamp.tzinfo is None:continue
    date=stamp.astimezone(dt.timezone(dt.timedelta(hours=8))).date().isoformat()
-   if date==day and c.get('task_mode')=='reading' and c.get('audit_scope')==scope:
+   if (date==day and c.get('task_mode')=='reading' and c.get('audit_scope')==scope
+       and r.get('record_origin')=='exploration_executor'):
     identity=r.get('native_thread_id')
     if identity:
      previous=latest.get(identity)
@@ -88,13 +89,9 @@ def daily_review(run,settings):
  root=cfg.get('records_directory');scope=cfg.get('scope')
  if not root or not scope:return {'status':'not_configured','missing':['records_directory','scope']}
  day=cfg.get('day') or (dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).date()-dt.timedelta(days=1)).isoformat()
- native=cfg.get('native_traces',{})
- collection=None
- if native.get('enabled'):
-  from native_reading_traces import collect_traces
-  collection=collect_traces(native['sessions_directory'],root,parent_thread_ids=native['parent_thread_ids'],scope=scope)
+ collection={'status':'diagnostics_only','reason':'Daily review uses executor reports; native logs remain unchanged.'}
  sources=select_daily_reports(root,day,scope)
- if not sources:return {'status':'no_matching_records','day':day}
+ if not sources:return {'status':'no_matching_executor_records','day':day,'native_collection':collection}
  result=run_review(sources,Path(run)/'review/reading-replay',settings)
  result['native_collection']=collection
  return result
