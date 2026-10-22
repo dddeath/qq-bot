@@ -73,19 +73,29 @@ class ReadBudget:
             return cur.lastrowid
 
 
-PROMPT='''你是独立学习研究员，直接调用已开放的只读检索工具，不派子代理。
-从真实轨迹的 BV 号或链接重新检索。video_candidates 供定位，多个候选结合目标依据自行选择。
-先用廉价基础概览确认标题、作者、分P、简介与章节，再选择补读。
-user_evaluation 仅是用户评价原文，goal_basis 是目标依据；自行判断需要核对的内容，不补造旧读取目的。
-调用工具时填写 reading_purpose(targeted/explore) 和 reading_reason。定向须与目标高度相关；探索可旁支，转定向时说明与目标的关系。
-可以自行选择网页搜索、B站资料、字幕、评论/楼中楼、弹幕、概览和定点画面。图片实际返回后才算看过。
-共用本轮预算。基础概览最多3次，其余按 max_read_units 计数；失败也消耗预算。探索比例为上限。视频准备、抽帧、读取图各算一次调用，优先复用原轨迹中已有的有效资源标识。
-网页搜索也占预算，搜索前用 learning_reads 的 declare_web_search 记录目的并预留一次额度，每次预留只对应一次搜索。不要调用命令行或修改文件。
-既有材料足够时可以少量探索，但不要求耗尽预算。无新信息或额度不足就结束。只提出建议，不修改线上配置。
-最终用中文给出核对结果、新信息、原结果的修正及仍缺的材料，并引用本轮 read_id；未能补读明确说明。'''
+def resolve_research_stop(exit_status, host_stop, remaining, declaration, completion_attempts=None):
+    if host_stop:return dict(stop_reason=host_stop,reason=host_stop,basis='executor_control')
+    if exit_status != 0:return dict(stop_reason='model_failed',reason='model_process_failed',basis='executor_process')
+    if declaration:return dict(stop_reason=declaration['stop_reason'],reason=declaration['reason'],basis='model_declared')
+    if completion_attempts:
+        return dict(stop_reason='stop_declaration_rejected',reason=completion_attempts[-1]['error'],basis='executor_validation')
+    if remaining['read_units']==0 and remaining.get('overview_units',0)==0:return dict(stop_reason='budget_exhausted',reason='read_budget_depleted',basis='executor_budget')
+    return dict(stop_reason='reason_not_recorded',reason='model_ended_without_stop_declaration',basis='missing')
 
 
-def autonomous_research(original,folder,limits,settings):
+async def begin_research_mcp(config_path, arguments, python):
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    server=str(Path(__file__).with_name('learning_research_mcp.py'))
+    async with stdio_client(StdioServerParameters(command=python,args=[server,str(config_path)])) as (read,write):
+        async with ClientSession(read,write) as session:
+            await session.initialize()
+            result=await session.call_tool('begin_reading_task',arguments)
+            if result.isError:raise RuntimeError(str(result))
+            return json.loads(next(b.text for b in result.content if b.type=='text'))
+
+
+def autonomous_research(original,folder,limits,settings, *, task_mode="learning", task_context=None):
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=False)
     cfg=tomllib.loads((Path(os.environ['CODEX_HOME'])/'config.toml').read_text())
     servers={k:v for k,v in cfg.get('mcp_servers',{}).items() if k in ('bilibili_readonly','video_frames','external_image') and v.get('command')}
@@ -103,19 +113,30 @@ def autonomous_research(original,folder,limits,settings):
     payload=research_input(original)
     trace_config={'root':str(folder/'tasks'),'scope':original.get('context',{}).get('audit_scope','learning'),
                   'max_read_units':limits['max_read_units'],'exploration_budget_ratio':limits['exploration_budget_ratio'],
-                  'timeout_seconds':limits['timeout_seconds']}
+                  'timeout_seconds':limits['timeout_seconds'],
+                  'native_sessions_directory':str(Path(os.environ['CODEX_HOME'])/'sessions')}
     trace=ResearchTrace(trace_config)
     goal=payload['original']['goal_basis']['text']
-    task_id=trace.begin(goal,video=original.get('video'),source={'kind':'review_extension','original_task_id':original.get('task_id')})
-    task_folder=trace.folder(task_id);budget=ReadBudget(task_folder/'budget.db')
-    (folder/'gateway.json').write_text(json.dumps({'servers':servers,'folder':str(folder.resolve()),'trace':trace_config,'task_id':task_id}),encoding='utf-8')
+    python=settings.get('reading_review',{}).get('python',sys.executable)
+    context = task_context if task_context is not None else {'review_material':payload,'user_evaluation':payload['original'].get('user_evaluation','')}
+    arguments={'goal':goal,'video':original.get('video'),'source':{'kind':'review_extension' if task_mode=='learning' else 'chat_replay','original_task_id':original.get('task_id')},'task_mode':task_mode,'context':context,'budget':limits}
+    gateway={'servers':servers,'folder':str(folder.resolve()),'trace':trace_config}
+    (folder/'gateway.json').write_text(json.dumps(gateway),encoding='utf-8')
+    import asyncio
+    protocol=asyncio.run(begin_research_mcp(folder/'gateway.json',arguments,python))
+    task_id=protocol['task_id'];task_folder=trace.folder(task_id);budget=ReadBudget(task_folder/'budget.db')
+    gateway['task_id']=task_id
+    (folder/'gateway.json').write_text(json.dumps(gateway),encoding='utf-8')
+    (folder/'mcp-input.json').write_text(json.dumps(arguments,ensure_ascii=False,indent=2),encoding='utf-8')
+    (folder/'mcp-result.json').write_text(json.dumps(protocol,ensure_ascii=False,indent=2),encoding='utf-8')
+    (folder/'prompt.txt').write_text(protocol['execution_prompt'],encoding='utf-8')
     payload['budget']=limits
     (folder/'input.json').write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding='utf-8')
     cmd=['codex','-a','never','-m',settings.get('reading_review',{}).get('model','gpt-6-astra'),
-         '-c','model_reasoning_effort="medium"','-c','service_tier="default"',
+         '-c','model_reasoning_effort='+json.dumps(settings.get('reading_review',{}).get('reasoning_effort','medium')),'-c','service_tier="default"',
          '-c','web_search="live"','-c','features.image_generation=false','-c','features.shell_tool=false']
     for name in cfg.get('mcp_servers',{}):cmd+=['-c',f'mcp_servers.{name}.enabled=false']
-    for tool in sorted(ALLOWED|{'declare_web_search'}):
+    for tool in sorted(ALLOWED|{'begin_reading_task','declare_native_read','finish_reading_task'}):
         cmd+=['-c',f'mcp_servers.learning_reads.tools.{tool}.approval_mode="approve"']
     python=settings.get('reading_review',{}).get('python',sys.executable)
     cmd+=['-c','mcp_servers.learning_reads.command='+json.dumps(python),
@@ -125,7 +146,7 @@ def autonomous_research(original,folder,limits,settings):
     started=time.monotonic();stop=None;code=None
     with (folder/'execution.jsonl').open('x',encoding='utf-8') as out,(folder/'stderr.txt').open('x',encoding='utf-8') as err:
         proc=subprocess.Popen(cmd,stdin=subprocess.PIPE,stdout=out,stderr=err,cwd=folder,text=True,encoding='utf-8',start_new_session=True)
-        proc.stdin.write(PROMPT+'\n'+json.dumps(payload,ensure_ascii=False));proc.stdin.close()
+        proc.stdin.write(protocol['execution_prompt']);proc.stdin.close()
         while proc.poll() is None:
             time.sleep(.2)
             events=[]
@@ -151,24 +172,27 @@ def autonomous_research(original,folder,limits,settings):
     for line in (folder/'execution.jsonl').read_text(encoding='utf-8').splitlines():
         try:events.append(json.loads(line))
         except ValueError:pass
-    web_events=[e for e in events if e.get('type')=='item.completed' and e.get('item',{}).get('type')=='web_search']
-    # Native events lack the reservation's read_id; retain them without inferred pairing.
-    if web_events:
-        (task_folder/'unassociated-native-events.json').write_text(
-            json.dumps(web_events,ensure_ascii=False,indent=2),encoding='utf-8')
-    for path in task_folder.glob('read-*.json'):
-        row=json.loads(path.read_text(encoding='utf-8'))
-        if row['result']['status']=='pending':
-            row['result']={'status':'missing_output','images':[]};row['elapsed_seconds']=None
-            row['missing_reason']='native_event_read_id_unavailable' if row['tool']=='web_search' else 'no_completion_recorded'
-            path.write_text(json.dumps(row,ensure_ascii=False),encoding='utf-8')
+    from native_web_trace import NativeWebRecorder
+    recorder=NativeWebRecorder(trace)
+    native_thread=None
+    for event in events:
+        if event.get('type')=='thread.started':native_thread=event.get('thread_id')
+        if native_thread:recorder.observe(native_thread,event,task_id=task_id)
+    from native_web_trace import sync_native_reads
+    sync_native_reads(trace,task_id,Path(os.environ['CODEX_HOME'])/'sessions',native_thread_id=native_thread)
+    recorder.close(task_id)
     reads=[]
     for path in sorted(task_folder.glob('read-*.json')):
         row=json.loads(path.read_text(encoding='utf-8'));row['read_id']=len(reads)+1;reads.append(row)
-    result={'status':'completed' if code==0 else 'partial','reads':reads,'stop_reason':stop or ('completed' if code==0 else 'model_failed'),
+    declaration_path=task_folder/'completion.json'
+    declaration=json.loads(declaration_path.read_text(encoding='utf-8')) if declaration_path.exists() else None
+    stop_record=resolve_research_stop(code,stop,trace.remaining(task_folder),declaration,trace.report(task_folder)['completion_attempts'])
+    result={'execution_status':'completed' if code==0 else 'failed',
+            'status':'completed' if code==0 and not any(x['result']['status'] in ('pending','missing_output') for x in reads) and stop_record['stop_reason'] not in ('reason_not_recorded','stop_declaration_rejected') else 'partial',
+            'reads':reads,'stop_reason':stop_record['stop_reason'],
             'summary':(folder/'answer.txt').read_text(encoding='utf-8') if (folder/'answer.txt').exists() else '',
             'elapsed_seconds':execution['elapsed_seconds'],'video_candidates':payload['video_candidates']}
-    structured=trace.finish(task_id,result['stop_reason'],stop or 'model_execution_ended',result['summary'] or 'No final report returned.')
+    structured=trace.report(task_folder) if declaration else trace.finish(task_id,stop_record['stop_reason'],stop_record['reason'],result['summary'] or 'No final report returned.',basis=stop_record['basis'])
     result={**structured,**result}
     (folder/'report.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
     return result

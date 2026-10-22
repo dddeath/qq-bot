@@ -47,7 +47,7 @@ def codex_overrides(path, *, existing_servers=(), conversation=None, host_wait=F
         managed = 'qq-managed-'+name
         tools = ['read_qq_tool_guide'] if name == 'qq-guides' else snapshot['servers'][name]['tools']
         if snapshot['servers'].get(name, {}).get('reading_trace'):
-            tools = [*tools, 'begin_reading_task', 'finish_reading_task']
+            tools = [*tools, 'begin_reading_task', 'finish_reading_task', 'declare_native_read']
         for key, value in {**config, 'enabled': True, 'enabled_tools': tools,
                            'tool_timeout_sec': 3660 if 'wait_chat_messages' in tools else 245}.items():
             overrides[f'mcp_servers.{managed}.{key}'] = value
