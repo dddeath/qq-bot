@@ -7,20 +7,22 @@
       "local-knowledge": {
         "command": "/absolute/venv/bin/python",
         "args": [
-          "/absolute/release/src/runtime/local_knowledge.py"
+          "/absolute/release/src/runtime/knowledge_catalog_mcp.py"
         ],
         "env": {
           "QQ_KNOWLEDGE_ROOT": "${knowledge_root}",
           "QQ_KNOWLEDGE_ACCOUNT": "${account_id}",
-          "QQ_KNOWLEDGE_GROUP": "${group_id}"
+          "QQ_KNOWLEDGE_GROUP": "${group_id}",
+          "QQ_KNOWLEDGE_LEARNING_ROOT": "/absolute/learning"
         },
         "harnesses": [
           "codex",
           "antigravity"
         ],
         "tools": [
-          "search_local_knowledge",
-          "read_local_knowledge"
+          "get_knowledge_index",
+          "search_knowledge",
+          "read_knowledge"
         ]
       }
     }

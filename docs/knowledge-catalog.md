@@ -43,4 +43,22 @@
 
 配置 `reading_trace` 的既有工具代理与学习检索网关均可调用知识工具。`begin_reading_task.needs` 接受 expression、reference、profile 数组，生成 reading-v3 协议。搜索与索引计入原有概览预算，正文片段计入补读预算；仍保留 300 秒默认总时间及 20% 探索上限。
 
-执行器保存实际入参、读取目的、结果和返回投影（含预算回执）；图片投影引用真实保存的像素文件。主会话轮次总披露预算和旧工具迁移尚待实施。
+执行器保存实际入参、读取目的、结果和返回投影（含预算回执）；图片投影引用真实保存的像素文件。主会话预算与迁移入口见下节。
+
+## 工具快照迁移与主轮次预算
+
+`knowledge_migration.migrate_snapshot(snapshot, learning_root=...)` 返回新的工具快照副本。它保留会话绑定和其他工具，把旧知识读取入口替换为目录入口，移除独立 `read_group_learning` 读取白名单，保留 `record_completed_search`。学习根目录由宿主显式传入；函数不写配置、不激活快照。无法唯一确定知识服务或同一服务混有其他工具时返回错误，留给配置调用方拆分。
+
+宿主等待运行器每次交付主模型前建立独立的知识披露账目，默认 2500 估算 token，配置字段为 `main_context.knowledge_turn_estimated_tokens`。同轮知识调用共享预算，工具续接不会刷新额度。MCP 返回采用一个语义载荷的 JSON UTF-8 字节数除以 2 向上取整，避免重复计算 text 与 structuredContent；预算回执自身不计入。超过剩余额度时不交付本次资料正文，返回停止原因及剩余额度。该账目保存在运行目录 `knowledge-budget.sqlite3`，不表示实际模型计费 token。
+
+该预算接入宿主等待的 Codex 主会话。独立检索任务继续使用各自的任务预算，其他 harness 尚未接入主轮次账目。
+
+## 配置版本与学习入口
+
+`knowledge_migration.migrate_profile(control_plane, profile_ref, learning_root=...)` 通过现有 ControlPlane 写入新 ToolProfile 版本，保留旧版本和 Bot 的固定引用。相同迁移重复执行返回已有结果；若期间出现不同配置版本，则按既有版本冲突规则停止。生成版本与应用到机器人分别执行。
+
+学习／独立检索配置使用 `tool_snapshot` 指向已展开账号、群和路径的工具快照。执行器从快照选取统一知识服务，保留配置中的工具白名单，校验学习配置的 account、group 与知识绑定一致；网络服务仍沿用原有配置。未配置 tool_snapshot 时保留原先的网络读取流程。
+
+`begin_reading_task` 返回的协议携带 `knowledge_index`。该索引由 MCP 入口根据实际工具配置生成，与主会话启动索引共用 render_servers；目录和简短映射受启动预算限制，正文继续按需读取。独立检索入口可传 needs，供表达、资料、画像需求使用。
+
+主会话 `knowledge-budget.sqlite3` 的 deliveries 保存每次调用的工具、参数、原始返回、实际披露、耗时和预算回执，包括被预算拦截的读取。原始资料仅保留在审计记录中，超限结果不会进入模型。检索任务继续保留自身 task_id、read_id 及读取目的。

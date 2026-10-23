@@ -96,17 +96,46 @@ async def begin_research_mcp(config_path, arguments, python):
             return json.loads(next(b.text for b in result.content if b.type=='text'))
 
 
-def autonomous_research(original,folder,limits,settings, *, task_mode="learning", task_context=None):
+def research_servers(config, settings):
+    """Resolve read services, taking knowledge scope from the host tool snapshot."""
+    from copy import deepcopy
+    servers = {k: deepcopy(v) for k, v in config.get('mcp_servers', {}).items()
+               if k in ('bilibili_readonly', 'video_frames', 'external_image') and v.get('command')}
+    snapshot_path = settings.get('tool_snapshot')
+    if snapshot_path:
+        snapshot = json.loads(Path(snapshot_path).read_text(encoding='utf-8'))
+        providers = [(name, server) for name, server in snapshot['servers'].items()
+                     if {'search_knowledge', 'read_knowledge'}.issubset(server.get('tools', []))]
+        if len(providers) != 1:
+            raise ValueError('research_knowledge_provider_must_be_unique')
+        name, provider = providers[0]
+        if not provider.get('command') or provider.get('url'):
+            raise ValueError('research_knowledge_requires_stdio')
+        env = provider.get('env', {})
+        for field, key in [('account', 'QQ_KNOWLEDGE_ACCOUNT'), ('group', 'QQ_KNOWLEDGE_GROUP')]:
+            if settings.get(field) is not None and str(settings[field]) != env.get(key):
+                raise ValueError('research_knowledge_scope_mismatch')
+        if name in servers:
+            raise ValueError('research_knowledge_server_name_conflict')
+        server = deepcopy(provider)
+        server.pop('reading_trace', None)
+        server['tools'] = [tool for tool in server['tools'] if tool in ALLOWED]
+        servers[name] = server
+    return servers
+
+
+def autonomous_research(original,folder,limits,settings, *, task_mode="learning", task_context=None, needs=None):
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=False)
     cfg=tomllib.loads((Path(os.environ['CODEX_HOME'])/'config.toml').read_text())
-    servers={k:v for k,v in cfg.get('mcp_servers',{}).items() if k in ('bilibili_readonly','video_frames','external_image') and v.get('command')}
+    servers=research_servers(cfg, settings)
     if not servers:raise RuntimeError('learning_read_tools_not_configured')
     node=settings.get('node')
     for name,server in servers.items():
         if name=='bilibili_readonly' and settings.get('bilibili_provider',{}).get('call_script'):
             server['command']=settings['bilibili_provider'].get('node',server['command'])
             server['args']=[str(Path(settings['bilibili_provider']['call_script']).with_name('server.mjs'))]
-        server['env']={**server.get('env',{}),**settings.get('env',{})}
+        if name in ('bilibili_readonly', 'video_frames', 'external_image'):
+            server['env']={**server.get('env',{}),**settings.get('env',{})}
     external=Path(__file__).with_name('external_image.py')
     if external.exists():
         servers['external_image']={'command':settings.get('reading_review',{}).get('python',sys.executable),'args':[str(external)]}
@@ -120,7 +149,7 @@ def autonomous_research(original,folder,limits,settings, *, task_mode="learning"
     goal=payload['original']['goal_basis']['text']
     python=settings.get('reading_review',{}).get('python',sys.executable)
     context = task_context if task_context is not None else {'review_material':payload,'user_evaluation':payload['original'].get('user_evaluation','')}
-    arguments={'goal':goal,'video':original.get('video'),'source':{'kind':'review_extension' if task_mode=='learning' else 'chat_replay','original_task_id':original.get('task_id')},'task_mode':task_mode,'context':context,'budget':limits}
+    arguments={'goal':goal,'video':original.get('video'),'source':{'kind':'review_extension' if task_mode=='learning' else 'chat_replay','original_task_id':original.get('task_id')},'task_mode':task_mode,'context':context,'budget':limits,'needs':needs or []}
     gateway={'servers':servers,'folder':str(folder.resolve()),'trace':trace_config}
     (folder/'gateway.json').write_text(json.dumps(gateway),encoding='utf-8')
     import asyncio

@@ -3,6 +3,8 @@ import json
 import os
 from pathlib import Path
 import time
+import uuid
+from knowledge_turn_budget import TurnBudget
 import tomllib
 import sys
 from urllib.request import Request, build_opener, ProxyHandler
@@ -50,8 +52,10 @@ def event_inputs(event):
 
 
 class EventSession:
-    def __init__(self, native, timeout):
+    def __init__(self, native, timeout, knowledge_budget=None, knowledge_limit=2500, research_links=None):
         self.native, self.timeout = native, timeout
+        self.research_links = research_links
+        self.knowledge_budget, self.knowledge_limit = knowledge_budget, knowledge_limit
         self.guidance = GuidanceProjection()
         self.compaction_generation = 0
 
@@ -64,6 +68,10 @@ class EventSession:
         return self.native.last_usage
 
     def run_turn(self, event):
+        if self.research_links:
+            event = self.research_links.register(event)
+        if self.knowledge_budget:
+            self.knowledge_budget.begin(uuid.uuid4().hex, self.knowledge_limit)
         projected, snapshot = self.guidance.prepare(event)
         generation = self.compaction_generation
         result = self.native.run_turn(event_inputs(projected), timeout=self.timeout)
@@ -163,7 +171,7 @@ def run_context_chat(run, thread, *, policy, tulpa_session, conversation, activa
     if snapshot_path:
         snapshot=load_snapshot(snapshot_path,conversation=conversation)
         prompt=startup_prompt(prompt,snapshot)
-        overrides.update(codex_overrides(snapshot_path,existing_servers=config.get('mcp_servers',{}),conversation=conversation,host_wait=True))
+        overrides.update(codex_overrides(snapshot_path,existing_servers=config.get('mcp_servers',{}),conversation=conversation,host_wait=True,knowledge_budget=run/'knowledge-budget.sqlite3',research_links=run/'research-links.sqlite3'))
         for key in list(overrides):
             if key.endswith('.enabled_tools'):
                 overrides[key]=[name for name in overrides[key] if name!='wait_chat_messages']
@@ -203,7 +211,10 @@ def run_context_chat(run, thread, *, policy, tulpa_session, conversation, activa
             native.configure(prompt+HOST_WAIT_INSTRUCTIONS,
                 cwd=str(run.resolve()), model='gpt-6.1-sol', approvalPolicy='never', sandbox='read-only',
                 serviceTier='priority' if context.get('fast', False) else 'default')
-            event_session = EventSession(native, compact.get('operation_timeout_seconds', 600))
+            from research_links import ReportLinks
+            event_session = EventSession(native, compact.get('operation_timeout_seconds', 600),
+                TurnBudget(run/'knowledge-budget.sqlite3'), context.get('knowledge_turn_estimated_tokens', 2500),
+                ReportLinks(run/'research-links.sqlite3', conversation))
             loop = ChatLoop(event_session, tulpa_session,
                             window=window, policy=strategy, record=record)
             def record_run(item):

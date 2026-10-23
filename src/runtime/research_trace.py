@@ -52,6 +52,7 @@ class ResearchTrace:
         context = dict(goal=goal, video=video, task_mode=task_mode, needs=list(dict.fromkeys(needs or [])), task_context=context or {}, audit_scope=self.config['scope'],
                        task_source='task_entry', request_source=source, budget=limits,
                        recorded_at=dt.datetime.now(dt.timezone.utc).isoformat())
+        context['knowledge_index'] = self.config.get('knowledge_index', '')
         (folder / 'context.json').write_text(json.dumps(context, ensure_ascii=False), encoding='utf-8')
         ReadBudget(folder / 'budget.db', limits['max_read_units'],
                    limits['exploration_budget_ratio'], limits['timeout_seconds'])

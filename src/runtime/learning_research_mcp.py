@@ -15,14 +15,16 @@ async def main(config_path):
     from mcp.server.stdio import stdio_server
     from mcp.types import Tool, TextContent
     cfg=json.loads(Path(config_path).read_text(encoding='utf-8'));root=Path(cfg['folder'])
-    trace=ResearchTrace(cfg['trace']);task_id=cfg.get('task_id');app=Server('learning-reads');available={};schemas=[]
+    from startup_knowledge import render_servers
+    trace=ResearchTrace({**cfg['trace'], 'knowledge_index': render_servers(cfg['servers'])});task_id=cfg.get('task_id');app=Server('learning-reads');available={};schemas=[]
     async with AsyncExitStack() as stack:
         for name,c in cfg['servers'].items():
             try:
                 inp,out=await stack.enter_async_context(stdio_client(StdioServerParameters(command=c['command'],args=c.get('args',[]),env=os.environ|c.get('env',{}))))
                 session=await stack.enter_async_context(ClientSession(inp,out));await session.initialize()
                 for tool in (await session.list_tools()).tools:
-                    if tool.name not in ALLOWED:continue
+                    if tool.name not in ALLOWED or ('tools' in c and tool.name not in c['tools']):continue
+                    if tool.name in available:raise ValueError('duplicate_research_tool:'+tool.name)
                     schemas.append(tool.model_dump(mode='json',exclude_none=True));available[tool.name]=session
             except Exception as exc:
                 with (root/'gateway-errors.jsonl').open('a') as f:f.write(json.dumps({'server':name,'error':str(exc)})+'\n')

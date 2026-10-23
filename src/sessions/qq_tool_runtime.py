@@ -34,33 +34,35 @@ def load_snapshot(path, *, conversation=None, session_id=None):
 def startup_prompt(prompt, snapshot):
     qq = snapshot.get('qq_tools')
     result = prompt if not qq else prompt+'\n\n'+qq['startup']
-    catalogs = [s for s in snapshot.get('servers', {}).values()
-                if {'search_knowledge', 'read_knowledge'}.issubset(s.get('tools', []))]
-    if not catalogs:
-        return result
-    if len(catalogs) != 1:
-        raise ValueError('ambiguous_startup_knowledge_provider')
-    env = catalogs[0].get('env', {})
-    account, group = env.get('QQ_KNOWLEDGE_ACCOUNT', ''), env.get('QQ_KNOWLEDGE_GROUP', '')
-    if qq and (account != qq['binding']['account_id'] or group != qq['binding']['group_id']):
-        raise ValueError('startup_knowledge_scope_mismatch')
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'runtime'))
-    from startup_knowledge import render_catalog
-    knowledge = render_catalog(env['QQ_KNOWLEDGE_ROOT'], account, group,
-        env.get('QQ_KNOWLEDGE_LEARNING_ROOT'), int(env.get('QQ_KNOWLEDGE_STARTUP_BUDGET', '800')))
-    return result+'\n\n'+knowledge
+    from startup_knowledge import render_servers
+    knowledge = render_servers(snapshot.get('servers', {}), qq['binding'] if qq else None)
+    return result+'\n\n'+knowledge if knowledge else result
 
 
-def codex_overrides(path, *, existing_servers=(), conversation=None, host_wait=False):
+
+def codex_overrides(path, *, existing_servers=(), conversation=None, host_wait=False, knowledge_budget=None, research_links=None):
     path = Path(path).resolve()
     snapshot = load_snapshot(path, conversation=conversation)
     servers = server_configs(snapshot, path, python=sys.executable,
                              proxy=str(Path(__file__).with_name('tool_proxy.py')), host_wait=host_wait)
+    if knowledge_budget:
+        for name, config in servers.items():
+            if {'search_knowledge', 'read_knowledge'}.issubset(snapshot['servers'].get(name, {}).get('tools', [])):
+                config['args'] += ['--knowledge-budget', str(knowledge_budget)]
+    if research_links:
+        if not conversation:raise ValueError('research_links_conversation_required')
+        for name, config in servers.items():
+            source = snapshot['servers'].get(name, {})
+            if source.get('url') and {'plan_chat_reply','send_chat_reply'}.intersection(source.get('tools', [])):
+                config['args'] += ['--research-links', str(research_links), '--conversation', conversation]
     overrides = {f'mcp_servers.{name}.enabled': False for name in existing_servers}
     for name, config in servers.items():
         # Fresh namespaces avoid inheriting an old URL, credential or disabled list.
         managed = 'qq-managed-'+name
         tools = ['read_qq_tool_guide'] if name == 'qq-guides' else snapshot['servers'][name]['tools']
+        if '--research-links' in config.get('args', []):
+            tools = [*tools, 'read_research_report']
         if snapshot['servers'].get(name, {}).get('reading_trace'):
             tools = [*tools, 'begin_reading_task', 'finish_reading_task', 'declare_native_read']
         for key, value in {**config, 'enabled': True, 'enabled_tools': tools,

@@ -13,7 +13,8 @@ def generate(task_id, context):
     policy['overview_tools'] = sorted(OVERVIEW)
     policy['counting_rule'] = '概览类工具最先的3次读取使用概览额度，其余每次调用使用1次补读额度；探索调用另受探索总额度限制。失败调用计数。视频准备、采样、读图分别计数。'
     task = {'task_id':task_id,'task_mode':context['task_mode'],'goal':context['goal'],
-            'context':context.get('task_context',{}),'needs':context.get('needs',[]),'video':context['video'],'budget_policy':policy}
+            'context':context.get('task_context',{}),'needs':context.get('needs',[]),'video':context['video'],'budget_policy':policy,
+            'knowledge_index':context.get('knowledge_index','')}
     role = ('直接回答用户原请求，返回结论、依据和仍缺材料。' if context['task_mode']=='reading' else
             '依据目标和用户评价原文核对材料，返回新信息、评审意见和仍缺材料。')
     protocol = '''直接调用已开放的只读检索工具完成本任务，不派生子代理。任务数据如下：

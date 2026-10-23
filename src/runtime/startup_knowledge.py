@@ -33,3 +33,19 @@ def render(root,account,group):
         if not page['found']:raise ValueError('missing_startup_knowledge:'+path)
         sections.append(f'## 知识入口：{path}\n\n'+page['text'])
     return '\n\n'.join(sections)
+
+
+def render_servers(servers, binding=None):
+    """Render only the enabled catalog's host-bound index."""
+    catalogs = [server for server in servers.values()
+                if {'search_knowledge', 'read_knowledge'}.issubset(server.get('tools', []))]
+    if not catalogs:
+        return ''
+    if len(catalogs) != 1:
+        raise ValueError('ambiguous_startup_knowledge_provider')
+    env = catalogs[0].get('env', {})
+    account, group = env.get('QQ_KNOWLEDGE_ACCOUNT', ''), env.get('QQ_KNOWLEDGE_GROUP', '')
+    if binding and (account != binding['account_id'] or group != binding['group_id']):
+        raise ValueError('startup_knowledge_scope_mismatch')
+    return render_catalog(env['QQ_KNOWLEDGE_ROOT'], account, group,
+        env.get('QQ_KNOWLEDGE_LEARNING_ROOT'), int(env.get('QQ_KNOWLEDGE_STARTUP_BUDGET', '800')))
