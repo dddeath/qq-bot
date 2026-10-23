@@ -155,7 +155,9 @@ def collect_creators(k,cfg,now):
 
 
 def video_settings(config):
-    return {**config.get('video_reading',{}), 'bilibili_provider':config.get('bilibili_provider',{}),
+    return {**config.get('video_reading',{}),
+            **{key:config[key] for key in ('account','group','access_db') if key in config},
+            'bilibili_provider':config.get('bilibili_provider',{}),
             'reading_review':config.get('reading_review',config.get('video_reading',{}).get('reading_review',{}))}
 
 def main():

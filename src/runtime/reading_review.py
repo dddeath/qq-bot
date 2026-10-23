@@ -6,13 +6,14 @@ import uuid
 from pathlib import Path
 
 CATEGORIES=('purpose_deviation','exploration_insufficient','targeted_insufficient')
-DEFAULTS={'max_tasks':3,'timeout_seconds':300,'extension_seconds':60,'max_read_units':2,'max_decisions':3,'exploration_budget_ratio':0.5}
+DEFAULTS={'max_tasks':3,'timeout_seconds':300,'extension_seconds':150,'max_read_units':2,'exploration_budget_ratio':0.5}
 
 def review_readings(sources,output,extend,judge,*,settings=None,now=time.monotonic):
  sources=list(sources)
 
  cfg=DEFAULTS| (settings or {})
- if any(type(cfg[k]) is not int or cfg[k]<1 for k in ('max_tasks','max_read_units','max_decisions')) or cfg['timeout_seconds']<=0 or cfg['extension_seconds']<=0:raise ValueError('invalid_review_budget')
+ cfg.pop('max_decisions',None)  # Legacy JSON decision-loop limit; native reads use time and read units.
+ if any(type(cfg[k]) is not int or cfg[k]<1 for k in ('max_tasks','max_read_units')) or cfg['timeout_seconds']<=0 or cfg['extension_seconds']<=0:raise ValueError('invalid_review_budget')
  folder=Path(output)/(dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')+'-'+uuid.uuid4().hex[:8]);folder.mkdir(parents=True,exist_ok=False)
  started=now();items=[]
  for source in list(sources)[:cfg['max_tasks']]:
@@ -22,8 +23,10 @@ def review_readings(sources,output,extend,judge,*,settings=None,now=time.monoton
   dest=folder/f'task-{len(items)+1:03d}';dest.mkdir();(dest/'original.json').write_bytes(raw)
   row={'source':str(source.resolve())};items.append(row)
   try:
-   limits={k:cfg[k] for k in ('max_read_units','max_decisions','exploration_budget_ratio')}
-   limits['timeout_seconds']=min(remaining,cfg['extension_seconds'])
+   limits={k:cfg[k] for k in ('max_read_units','exploration_budget_ratio')}
+   limits['timeout_seconds']=min(remaining/2,cfg['extension_seconds'])
+   row['phase_budget']={'extension_seconds':limits['timeout_seconds'],
+                        'assessment_reserved_seconds':remaining-limits['timeout_seconds']}
    extension=extend(original,dest/'extension',limits)
    (dest/'extension-result.json').write_text(json.dumps(extension,ensure_ascii=False,indent=2),encoding='utf-8')
    remaining=cfg['timeout_seconds']-(now()-started)

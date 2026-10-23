@@ -17,7 +17,7 @@ from pathlib import Path
 OVERVIEW = {'get_video_metadata', 'get_video_chapters', 'get_video_context', 'search_bilibili_videos', 'web_search', 'get_knowledge_index', 'search_knowledge'}
 ALLOWED = {'search_bilibili_videos','get_video_metadata','get_video_transcript',
  'get_video_comments','get_video_chapters','search_bilibili_creators','get_bilibili_creator_content',
- 'get_video_danmaku','get_video_context','get_video_comment_threads',
+ 'get_video_danmaku','get_video_context','get_video_comment_threads','check_bilibili_credentials',
  'watch_video','sample_video_frames','get_frames','get_frame_at','read_external_image',
  'get_knowledge_index','search_knowledge','read_knowledge'}
 
@@ -34,44 +34,92 @@ def text_projection(value):
 
 
 def research_input(original):
-    from reading_review_runtime import bounded_review_payload, review_input
-    # Extract identifiers from actual call arguments before the audit text is bounded.
-    calls=[r.get('raw_call',{}).get('payload',{}) for r in original.get('reads',[])]
+    # Candidate identifiers are metadata; evidence is disclosed from the archive on demand.
+    calls=[r.get('arguments',r.get('raw_call',{}).get('payload',{})) for r in original.get('reads',[])]
     identifiers=json.dumps([original.get('video'),calls],ensure_ascii=False)
     candidates=list(dict.fromkeys(re.findall(r'BV[0-9A-Za-z]{10}',identifiers)))
-    payload=bounded_review_payload(text_projection({'original':review_input(original)}),60000)
-    return {**payload,'video_candidates':candidates,
+    return {'video_candidates':candidates,
             'candidate_basis':'Identifiers in recorded calls; candidate presence does not establish a successful read.'}
 
 
 class ReadBudget:
     """Shared budget ledger for native web events and the read-only MCP gateway."""
-    def __init__(self,path,units=2,ratio=.5,seconds=60):
+    def __init__(self,path,units=2,ratio=.5,seconds=60,policy=None):
         self.path=str(path)
         with self.db() as db:
             db.execute('create table if not exists settings (id integer primary key, units integer, explore integer, deadline real)')
             db.execute('create table if not exists calls (id integer primary key, tool text, purpose text, reason text, overview integer, at real)')
+            db.execute('create table if not exists policy (id integer primary key, data text)')
+            db.execute('create table if not exists video_polls (call_id integer primary key, video text, at real)')
             db.execute('insert or ignore into settings values (1,?,?,?)',(units,math.ceil(units*ratio),time.time()+seconds))
+            if policy is not None:
+                db.execute('insert or ignore into policy values (1,?)',(json.dumps(policy),))
     @contextmanager
     def db(self):
         db=sqlite3.connect(self.path,timeout=10)
         try:
             with db:yield db
         finally:db.close()
-    def reserve(self,tool,purpose,reason):
+    @staticmethod
+    def video_key(arguments):
+        from urllib.parse import parse_qs, urlsplit
+        video=(arguments or {}).get('video')
+        if not isinstance(video,str) or not video.strip():raise ValueError('video_required')
+        match=re.search(r'BV[0-9A-Za-z]{10}',video)
+        if not match:return video.strip()
+        page=parse_qs(urlsplit(video).query).get('p',['1'])[0]
+        return match.group()+':p'+str(int(page))
+
+    def remaining(self):
+        with self.db() as db:
+            units,explore,deadline=db.execute('select units,explore,deadline from settings').fetchone()
+            rows=db.execute('select purpose,overview from calls where id not in (select call_id from video_polls)').fetchall()
+            saved=db.execute('select data from policy where id=1').fetchone()
+            policy=json.loads(saved[0]) if saved else {}
+            polls=db.execute('select video,count(*),min(at) from video_polls group by video').fetchall()
+        now=time.time();reads=max(0,units-sum(not r[1] for r in rows))
+        return dict(overview_units=max(0,3-sum(r[1] for r in rows)),read_units=reads,
+            targeted_units=max(0,min(reads,policy.get('max_targeted_units',units)-sum(r[0]=='targeted' and not r[1] for r in rows))),
+            exploration_units=max(0,explore-sum(r[0]=='explore' for r in rows)),seconds=max(0,deadline-now),
+            video_polls={video:{'calls':max(0,policy['video_poll_max_calls']-count),
+                'seconds':max(0,min(deadline,first+policy['video_poll_timeout_seconds'])-now)}
+                for video,count,first in polls})
+
+    def reserve(self,tool,purpose,reason,arguments=None):
         if purpose not in ('targeted','explore') or not isinstance(reason,str) or not reason.strip():raise ValueError('reading_purpose_required')
         with self.db() as db:
             db.execute('begin immediate')
             units,explore,deadline=db.execute('select units,explore,deadline from settings').fetchone()
-            rows=db.execute('select purpose,overview from calls').fetchall()
+            rows=db.execute('select purpose,overview from calls where id not in (select call_id from video_polls)').fetchall()
+            saved=db.execute('select data from policy where id=1').fetchone()
+            policy=json.loads(saved[0]) if saved else {}
             if time.time()>=deadline:raise ValueError('time_budget_exhausted')
             overview=tool in OVERVIEW and sum(x[1] for x in rows)<3
             if not rows and not overview:raise ValueError('overview_required')
+            if tool=='watch_video' and 'video_poll_max_calls' in policy:
+                key=self.video_key(arguments)
+                count,first=db.execute('select count(*),min(at) from video_polls where video=?',(key,)).fetchone()
+                if count>=policy['video_poll_max_calls']:raise ValueError('video_poll_count_exhausted')
+                if first is not None and time.time()>=first+policy['video_poll_timeout_seconds']:
+                    raise ValueError('video_poll_time_exhausted')
+                stamp=time.time()
+                cur=db.execute('insert into calls(tool,purpose,reason,overview,at) values(?,?,?,?,?)',(tool,purpose,reason,0,stamp))
+                db.execute('insert into video_polls values(?,?,?)',(cur.lastrowid,key,stamp))
+                return cur.lastrowid
             used=sum(not x[1] for x in rows)
             if not overview and used>=units:raise ValueError('read_budget_exhausted')
+            if (not overview and purpose=='targeted'
+                    and sum(x[0]=='targeted' and not x[1] for x in rows)>=policy.get('max_targeted_units',units)):
+                raise ValueError('targeted_budget_exhausted')
             if purpose=='explore' and sum(x[0]=='explore' for x in rows)>=explore:raise ValueError('exploration_budget_exhausted')
             cur=db.execute('insert into calls(tool,purpose,reason,overview,at) values(?,?,?,?,?)',(tool,purpose,reason,int(overview),time.time()))
             return cur.lastrowid
+
+
+def reading_budget_exhausted(remaining):
+    return (remaining['seconds']<=0 or
+            (remaining.get('overview_units',0)==0 and
+             (remaining['read_units']==0 or (remaining.get('targeted_units',remaining['read_units'])==0 and remaining['exploration_units']==0))))
 
 
 def resolve_research_stop(exit_status, host_stop, remaining, declaration, completion_attempts=None):
@@ -80,7 +128,7 @@ def resolve_research_stop(exit_status, host_stop, remaining, declaration, comple
     if declaration:return dict(stop_reason=declaration['stop_reason'],reason=declaration['reason'],basis='model_declared')
     if completion_attempts:
         return dict(stop_reason='stop_declaration_rejected',reason=completion_attempts[-1]['error'],basis='executor_validation')
-    if remaining['read_units']==0 and remaining.get('overview_units',0)==0:return dict(stop_reason='budget_exhausted',reason='read_budget_depleted',basis='executor_budget')
+    if reading_budget_exhausted(remaining):return dict(stop_reason='budget_exhausted',reason='read_budget_depleted',basis='executor_budget')
     return dict(stop_reason='reason_not_recorded',reason='model_ended_without_stop_declaration',basis='missing')
 
 
@@ -141,14 +189,20 @@ def autonomous_research(original,folder,limits,settings, *, task_mode="learning"
         servers['external_image']={'command':settings.get('reading_review',{}).get('python',sys.executable),'args':[str(external)]}
     from research_trace import ResearchTrace
     payload=research_input(original)
+    from review_materials import ReviewMaterials
+    materials=ReviewMaterials.create(folder/'materials',{'original':original})
+    payload['review_materials_directory']=str(materials.root)
     trace_config={'root':str(folder/'tasks'),'scope':original.get('context',{}).get('audit_scope','learning'),
                   'max_read_units':limits['max_read_units'],'exploration_budget_ratio':limits['exploration_budget_ratio'],
                   'timeout_seconds':limits['timeout_seconds'],
                   'native_sessions_directory':str(Path(os.environ['CODEX_HOME'])/'sessions')}
     trace=ResearchTrace(trace_config)
-    goal=payload['original']['goal_basis']['text']
+    from reading_review_runtime import review_input
+    goal=review_input(original)['goal_basis']['text']
     python=settings.get('reading_review',{}).get('python',sys.executable)
-    context = task_context if task_context is not None else {'review_material':payload,'user_evaluation':payload['original'].get('user_evaluation','')}
+    context = task_context if task_context is not None else {
+        'review_materials_directory':str(materials.root),
+        'review_instructions':'先用 list_review_materials 查目录，读取原目标、停止结论与 research_feedback 中的群回复和评价关联。先选具体核验点，再按相关性展开原证据并执行补读，给实际补读与结论留出时间。read_review_material 用 pointer 或 next_offset 渐进展开；图片用 read_review_image。原证据读取不占联网补读次数，仍受当前补读时间限制；时间不足时用已取得材料收尾并声明停止原因。'}
     arguments={'goal':goal,'video':original.get('video'),'source':{'kind':'review_extension' if task_mode=='learning' else 'chat_replay','original_task_id':original.get('task_id')},'task_mode':task_mode,'context':context,'budget':limits,'needs':needs or []}
     gateway={'servers':servers,'folder':str(folder.resolve()),'trace':trace_config}
     (folder/'gateway.json').write_text(json.dumps(gateway),encoding='utf-8')
@@ -169,6 +223,8 @@ def autonomous_research(original,folder,limits,settings, *, task_mode="learning"
     for tool in sorted(ALLOWED|{'begin_reading_task','declare_native_read','finish_reading_task'}):
         cmd+=['-c',f'mcp_servers.learning_reads.tools.{tool}.approval_mode="approve"']
     python=settings.get('reading_review',{}).get('python',sys.executable)
+    from review_materials_mcp import cli_arguments
+    cmd+=cli_arguments(materials.root,python,time.time()+trace.remaining(task_folder)['seconds'])
     cmd+=['-c','mcp_servers.learning_reads.command='+json.dumps(python),
           '-c','mcp_servers.learning_reads.args='+json.dumps([str(Path(__file__).with_name('learning_research_mcp.py')),str(folder/'gateway.json')]),
           '-c','mcp_servers.learning_reads.tool_timeout_sec=120',
@@ -186,7 +242,7 @@ def autonomous_research(original,folder,limits,settings, *, task_mode="learning"
             web={e.get('item',{}).get('id') for e in events if e.get('item',{}).get('type')=='web_search'}
             with budget.db() as db:reserved=db.execute("select count(*) from calls where tool='web_search'").fetchone()[0]
             if len(web)>reserved:stop='web_search_without_reserved_budget'
-            if time.monotonic()-started>=limits['timeout_seconds']:stop='time_budget_exhausted'
+            if trace.remaining(task_folder)['seconds']<=0:stop='time_budget_exhausted'
             if stop:
                 if os.name=='posix':os.killpg(proc.pid,signal.SIGTERM)
                 else:proc.terminate()
@@ -196,7 +252,10 @@ def autonomous_research(original,folder,limits,settings, *, task_mode="learning"
                     else:proc.kill()
                 break
         code=proc.wait()
-    execution={'command':cmd,'exit_status':code,'elapsed_seconds':time.monotonic()-started,'stop_reason':stop}
+    execution_status=('timed_out' if stop=='time_budget_exhausted' else
+                      'cancelled' if stop else 'completed' if code==0 else 'failed')
+    execution={'command':cmd,'exit_status':code,'execution_status':execution_status,
+               'elapsed_seconds':time.monotonic()-started,'stop_reason':stop}
     (folder/'execution-result.json').write_text(json.dumps(execution),encoding='utf-8')
     events=[]
     for line in (folder/'execution.jsonl').read_text(encoding='utf-8').splitlines():
@@ -217,8 +276,8 @@ def autonomous_research(original,folder,limits,settings, *, task_mode="learning"
     declaration_path=task_folder/'completion.json'
     declaration=json.loads(declaration_path.read_text(encoding='utf-8')) if declaration_path.exists() else None
     stop_record=resolve_research_stop(code,stop,trace.remaining(task_folder),declaration,trace.report(task_folder)['completion_attempts'])
-    result={'execution_status':'completed' if code==0 else 'failed',
-            'status':'completed' if code==0 and not any(x['result']['status'] in ('pending','missing_output') for x in reads) and stop_record['stop_reason'] not in ('reason_not_recorded','stop_declaration_rejected') else 'partial',
+    result={'execution_status':execution_status,
+            'status':'completed' if code==0 and not stop and declaration and not any(x['result']['status'] in ('pending','missing_output') for x in reads) else 'partial',
             'reads':reads,'stop_reason':stop_record['stop_reason'],
             'summary':(folder/'answer.txt').read_text(encoding='utf-8') if (folder/'answer.txt').exists() else '',
             'elapsed_seconds':execution['elapsed_seconds'],'video_candidates':payload['video_candidates']}

@@ -6,7 +6,7 @@ import json
 import time
 import uuid
 from pathlib import Path
-from learning_research import ReadBudget
+from learning_research import ReadBudget, reading_budget_exhausted
 
 
 CONTROL_TOOLS = ['begin_reading_task', 'finish_reading_task', 'declare_native_read']
@@ -53,22 +53,18 @@ class ResearchTrace:
                        task_source='task_entry', request_source=source, budget=limits,
                        recorded_at=dt.datetime.now(dt.timezone.utc).isoformat())
         context['knowledge_index'] = self.config.get('knowledge_index', '')
+        context['execution_policy'] = {'max_targeted_units': min(18, limits['max_read_units']),
+                                       'video_poll_max_calls': 10, 'video_poll_timeout_seconds': 180}
         (folder / 'context.json').write_text(json.dumps(context, ensure_ascii=False), encoding='utf-8')
         ReadBudget(folder / 'budget.db', limits['max_read_units'],
-                   limits['exploration_budget_ratio'], limits['timeout_seconds'])
+                   limits['exploration_budget_ratio'], limits['timeout_seconds'], context['execution_policy'])
         from reading_protocol import generate
         write_record(folder/'protocol.json', generate(task_id, context))
         self.report(folder)
         return task_id
 
     def remaining(self, folder):
-        with ReadBudget(folder / 'budget.db').db() as db:
-            units, explore, deadline = db.execute('select units,explore,deadline from settings').fetchone()
-            rows = db.execute('select purpose,overview from calls').fetchall()
-        return dict(overview_units=max(0, 3-sum(r[1] for r in rows)),
-                    read_units=max(0, units-sum(not r[1] for r in rows)),
-                    exploration_units=max(0, explore-sum(r[0] == 'explore' for r in rows)),
-                    seconds=max(0, deadline-time.time()))
+        return ReadBudget(folder / 'budget.db').remaining()
 
     def prepare(self, tool, arguments):
         args = dict(arguments)
@@ -82,7 +78,7 @@ class ResearchTrace:
         if not isinstance(relation, str) or not relation.strip():
             raise ValueError('reading_relation_required')
         before = self.remaining(folder)
-        index = ReadBudget(folder / 'budget.db').reserve(tool, purpose.get('purpose'), purpose.get('reason'))
+        index = ReadBudget(folder / 'budget.db').reserve(tool, purpose.get('purpose'), purpose.get('reason'), args)
         record = dict(read_id=index, tool=tool, arguments=args,
                       action={'kind': tool, 'purpose': purpose['purpose']},
                       purpose_record={'question': purpose['reason'], 'relation_reason': relation,
@@ -126,7 +122,12 @@ class ResearchTrace:
             raise
         started = time.monotonic()
         try:
-            response = await asyncio.wait_for(invoke(tool, args), self.remaining(path.parent)['seconds'])
+            remaining = self.remaining(path.parent)
+            timeout = remaining['seconds']
+            if tool == 'watch_video':
+                poll = remaining['video_polls'].get(ReadBudget.video_key(args))
+                if poll is not None:timeout = min(timeout,poll['seconds'])
+            response = await asyncio.wait_for(invoke(tool, args), timeout)
         except Exception as exc:
             self.complete(path, {'error': {'message': str(exc), 'type': type(exc).__name__}}, time.monotonic()-started)
             raise
@@ -174,7 +175,7 @@ class ResearchTrace:
         if basis == 'model_declared' and stop_reason not in ('sufficient','budget_exhausted','no_readable_material','cancelled'):
             raise ValueError('invalid_stop_reason')
         remaining = self.remaining(folder)
-        if stop_reason == 'budget_exhausted' and remaining['seconds'] > 0 and (remaining['read_units'] > 0 or remaining['overview_units'] > 0):
+        if stop_reason == 'budget_exhausted' and not reading_budget_exhausted(remaining):
             raise ValueError('budget_not_exhausted: '+json.dumps(remaining))
         completion = dict(stop_reason=stop_reason, reason=reason, conclusion=conclusion,
                           basis=basis, budget_remaining=self.remaining(folder),
@@ -205,7 +206,7 @@ class ResearchTrace:
         staging.replace(folder / 'report.json')
         return report
 
-    def schemas(self, tools):
+    def schemas(self, tools, *, require_context=True):
         result = []
         for tool in tools:
             tool = json.loads(json.dumps(tool))
@@ -216,7 +217,12 @@ class ResearchTrace:
                     'reason': {'type': 'string'}, 'relation': {'type': 'string'},
                     'prior_observation': {'type': 'string'}},
                 'required': ['task_id', 'purpose', 'reason', 'relation'], 'additionalProperties': False}
-            schema['required'] = list(dict.fromkeys(schema.get('required', []) + ['_reading']))
+            if require_context:
+                schema['required'] = list(dict.fromkeys(schema.get('required', []) + ['_reading']))
+            else:
+                tool['description'] = tool.get('description', '') + ' 普通聊天按需读取可省略 _reading；检索任务须填写生成协议中的 _reading，使用任务独立预算并记录轨迹。'
+            if tool['name']=='watch_video':
+                tool['description'] = tool.get('description','') + ' 检索任务中，首次准备与后续查询每视频共最多10次、从首次准备起最多180秒，且受任务总时间限制；不占定向/探索补读次数。超限时保留未就绪状态，用已有材料收尾。'
             result.append(tool)
         for name, description, fields, required in [
             ('begin_reading_task', 'Generate execution_prompt from the original goal, context, mode and budget. Pass the returned prompt unchanged to the research session; retain task_id.',

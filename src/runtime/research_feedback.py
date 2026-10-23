@@ -3,8 +3,10 @@ import copy
 import hashlib
 from contextlib import closing
 import json
+import os
 import sqlite3
 import time
+import uuid
 from pathlib import Path
 
 
@@ -116,6 +118,27 @@ def body_of(item):
     return {}
 
 
+def full_report(result, database, conversation_id):
+    """Recover the exact registered version when the delivered report was paged."""
+    data = result.get('result') or {}
+    text = data.get('last_agent_message')
+    ref = result.get('report_ref') or {}
+    version = ref.get('version') or hashlib.sha256(text.encode()).hexdigest()
+    source = None
+    if hashlib.sha256(text.encode()).hexdigest() != version and database.is_file():
+        with closing(sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True)) as db:
+            db.execute('PRAGMA query_only=ON')
+            row = db.execute('SELECT body FROM reports WHERE conversation=? AND id=? AND version=?',
+                             (conversation_id, ref.get('report_id'), version)).fetchone()
+        if row:
+            restored = json.loads(row[0])['result']['last_agent_message']
+            if hashlib.sha256(restored.encode()).hexdigest() == version:
+                text = restored
+                source = {'file': str(database.resolve()), 'report_id': ref['report_id'], 'version': version}
+    return text, version, ('complete' if hashlib.sha256(text.encode()).hexdigest() == version
+                           else 'registered_body_unavailable'), source
+
+
 def runtime_materials(run_directories, conversation_id):
     """Read actual tool receipts and reports delivered in the same response turn."""
     reports, replies = {}, []
@@ -142,8 +165,13 @@ def runtime_materials(run_directories, conversation_id):
                     if not text or not tid or not agent:
                         continue
                     rid = agent + ':' + tid
-                    reports.setdefault(rid, dict(report_id=rid, version=hashlib.sha256(text.encode()).hexdigest(), native_thread_id=agent,
+                    if result.get('report_ref', {}).get('report_id', rid) != rid:
+                        continue
+                    text, version, content_status, registry_source = full_report(
+                        result, Path(directory)/'research-links.sqlite3', conversation_id)
+                    reports.setdefault(rid, dict(report_id=rid, version=version, native_thread_id=agent,
                         turn_id=tid, root_turn_id=data.get('root_turn_id'), text=text,
+                        content_status=content_status, registry_source=registry_source,
                         at=row['observed_at'], conversation_id=conversation_id,
                         source={'file': str(path.resolve()), 'line': number}))
                     active.append(rid)
@@ -204,9 +232,105 @@ def collect_feedback(run_directories, database, session_id, conversation_id, *,
                          cutoff=cutoff, feedback_window_seconds=feedback_window_seconds)
 
 
-def attach_feedback(original, bundle):
+def decoded_objects(value):
+    """Read nested JSON MCP blocks, never code or free-form quoted chat text."""
+    stack = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            if current.get('isError') is True:
+                continue
+            yield current
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+        elif isinstance(current, str) and current.lstrip().startswith(('{', '[')):
+            try: stack.append(json.loads(current))
+            except ValueError: pass
+
+
+def native_task_links(task_id, reports, sessions):
+    """Bind an executor task to actual tool receipts in a delivered report's turn."""
+    links = {}
+    if not task_id or not sessions:
+        return links
+    by_thread = {}
+    for report in reports:
+        by_thread.setdefault(report['native_thread_id'], {})[report['turn_id']] = report['report_id']
+    for thread, turns in by_thread.items():
+        for path in sorted(Path(sessions).rglob(f'*{thread}.jsonl')):
+            owner = None
+            turn = None
+            calls = {}
+            for number, row in jsonl(path):
+                payload = row.get('payload', {})
+                if row.get('type') == 'session_meta' and owner is None:
+                    owner = payload.get('id')
+                    if owner != thread: break
+                elif row.get('type') == 'turn_context':
+                    turn = payload.get('turn_id')
+                elif row.get('type') == 'response_item' and owner == thread:
+                    kind, cid = payload.get('type'), payload.get('call_id')
+                    if kind in ('function_call', 'custom_tool_call') and turn in turns:
+                        name = payload.get('name', '')
+                        code = payload.get('input', '') if name == 'exec' else name
+                        if 'begin_reading_task' in code or 'declare_native_read' in code:
+                            calls[cid] = (turn, number)
+                    elif kind in ('function_call_output', 'custom_tool_call_output') and cid in calls:
+                        for value in decoded_objects(payload.get('output')):
+                            if (value.get('task_id') == task_id and
+                                    ((value.get('protocol_version') and value.get('execution_prompt')) or
+                                     (value.get('read_id') and value.get('native_input')))):
+                                call_turn, line = calls[cid]
+                                links.setdefault(turns[call_turn], []).append({
+                                    'kind': 'native_task_receipt', 'task_id': task_id,
+                                    'native_thread_id': thread, 'native_turn_id': call_turn,
+                                    'call_id': cid, 'file': str(path.resolve()),
+                                    'call_line': line, 'result_line': number})
+                                break
+    return links
+
+
+def prepare_review_feedback(settings, output):
+    """One read-only collection path for daily and explicitly requested reviews."""
+    cfg = settings.get('reading_review', {})
+    feedback = cfg.get('feedback', {})
+    conversation = str(settings.get('account', '')) + ':group:' + str(settings.get('group', ''))
+    bundle = {'status': 'not_configured', 'conversation_id': conversation, 'items': []}
+    try:
+        if cfg.get('feedback_bundle'):
+            bundle = json.loads(Path(cfg['feedback_bundle']).read_text(encoding='utf-8'))
+        elif feedback.get('enabled'):
+            for key in ('account', 'group', 'access_db'):
+                if not settings.get(key): raise ValueError('feedback_binding_missing: ' + key)
+            directories = list(feedback.get('run_directories', []))
+            if feedback.get('current_run_path_file'):
+                directories.append(Path(feedback['current_run_path_file']).read_text(encoding='utf-8').strip())
+            if not directories: raise ValueError('feedback_binding_missing: run_directories')
+            bundle = collect_feedback(list(dict.fromkeys(directories)), settings['access_db'],
+                feedback['session_id'], conversation, cutoff=feedback.get('cutoff'),
+                feedback_window_seconds=feedback.get('window_seconds', 3600))
+            bundle['status'] = 'collected'
+    except (OSError, ValueError, KeyError, sqlite3.Error) as exc:
+        bundle = {'status': 'collection_failed', 'conversation_id': conversation,
+                  'items': [], 'error': str(exc)}
+    root = Path(output)
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / ('feedback-' + uuid.uuid4().hex + '.json')
+    path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding='utf-8')
+    return {**bundle, 'collection_file': str(path.resolve()),
+            'native_sessions_directory': feedback.get('native_sessions_directory') or
+                (str(Path(os.environ['CODEX_HOME'])/'sessions') if os.environ.get('CODEX_HOME') else None)}
+
+
+def attach_feedback(original, bundle, *, native_sessions_directory=None):
     """Create an audit projection; never rewrite the reading trace or user evaluation."""
     result = copy.deepcopy(original)
+    if bundle.get('status') in ('not_configured', 'collection_failed'):
+        result['research_feedback'] = {key: bundle[key] for key in
+            ('status', 'error', 'collection_file') if key in bundle}
+        result['research_feedback']['items'] = []
+        return result
     scope = original.get('context', {}).get('audit_scope')
     if scope != 'qq:' + bundle['conversation_id']:
         result['research_feedback'] = {'status': 'scope_mismatch', 'items': []}
@@ -214,11 +338,21 @@ def attach_feedback(original, bundle):
     thread = original.get('native_thread_id')
     turn = original.get('native_turn_id')
     # Native thread IDs are recorded identities; textual similarity is not one.
-    items = [copy.deepcopy(item) for item in bundle['items']
+    candidates = [copy.deepcopy(item) for item in bundle['items']
              if thread and item['report']['native_thread_id'] == thread
              and (not turn or item['report']['turn_id'] == turn)]
-    result['research_feedback'] = dict(status='linked' if items else 'report_identity_unavailable',
-        items=items, association_scope='native_turn' if turn else 'native_thread',
+    evidence = []
+    if not candidates:
+        links = native_task_links(original.get('task_id'), [i['report'] for i in bundle['items']],
+                                  native_sessions_directory or bundle.get('native_sessions_directory'))
+        candidates = [copy.deepcopy(item) for item in bundle['items'] if item['report']['report_id'] in links]
+        evidence = [link for item in candidates for link in links[item['report']['report_id']]]
+    items = candidates if len(candidates) == 1 else []
+    result['research_feedback'] = dict(status='linked' if items else
+        'report_identity_ambiguous' if candidates else 'report_identity_unavailable',
+        items=items, association_scope='native_turn', identity_evidence=evidence,
+        candidate_report_ids=[i['report']['report_id'] for i in candidates],
+        collection_file=bundle.get('collection_file'),
         captured_at=bundle['captured_at'],
         feedback_window_seconds=bundle['feedback_window_seconds'],
         interpretation=bundle['interpretation'])
