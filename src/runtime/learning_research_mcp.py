@@ -48,7 +48,7 @@ async def main(config_path):
             response=await trace.execute(name,arguments,invoke)
             from mcp.types import CallToolResult
             reply=CallToolResult.model_validate(response['result'])
-            return reply.content
+            return reply
         async with stdio_server() as (read,write):
             await app.run(read,write,app.create_initialization_options())
 

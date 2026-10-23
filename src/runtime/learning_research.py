@@ -14,11 +14,12 @@ import time
 import tomllib
 from pathlib import Path
 
-OVERVIEW = {'get_video_metadata', 'get_video_chapters', 'get_video_context', 'search_bilibili_videos', 'web_search'}
+OVERVIEW = {'get_video_metadata', 'get_video_chapters', 'get_video_context', 'search_bilibili_videos', 'web_search', 'get_knowledge_index', 'search_knowledge'}
 ALLOWED = {'search_bilibili_videos','get_video_metadata','get_video_transcript',
  'get_video_comments','get_video_chapters','search_bilibili_creators','get_bilibili_creator_content',
  'get_video_danmaku','get_video_context','get_video_comment_threads',
- 'watch_video','sample_video_frames','get_frames','get_frame_at','read_external_image'}
+ 'watch_video','sample_video_frames','get_frames','get_frame_at','read_external_image',
+ 'get_knowledge_index','search_knowledge','read_knowledge'}
 
 
 def text_projection(value):

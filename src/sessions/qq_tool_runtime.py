@@ -33,7 +33,22 @@ def load_snapshot(path, *, conversation=None, session_id=None):
 
 def startup_prompt(prompt, snapshot):
     qq = snapshot.get('qq_tools')
-    return prompt if not qq else prompt+'\n\n'+qq['startup']
+    result = prompt if not qq else prompt+'\n\n'+qq['startup']
+    catalogs = [s for s in snapshot.get('servers', {}).values()
+                if {'search_knowledge', 'read_knowledge'}.issubset(s.get('tools', []))]
+    if not catalogs:
+        return result
+    if len(catalogs) != 1:
+        raise ValueError('ambiguous_startup_knowledge_provider')
+    env = catalogs[0].get('env', {})
+    account, group = env.get('QQ_KNOWLEDGE_ACCOUNT', ''), env.get('QQ_KNOWLEDGE_GROUP', '')
+    if qq and (account != qq['binding']['account_id'] or group != qq['binding']['group_id']):
+        raise ValueError('startup_knowledge_scope_mismatch')
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'runtime'))
+    from startup_knowledge import render_catalog
+    knowledge = render_catalog(env['QQ_KNOWLEDGE_ROOT'], account, group,
+        env.get('QQ_KNOWLEDGE_LEARNING_ROOT'), int(env.get('QQ_KNOWLEDGE_STARTUP_BUDGET', '800')))
+    return result+'\n\n'+knowledge
 
 
 def codex_overrides(path, *, existing_servers=(), conversation=None, host_wait=False):

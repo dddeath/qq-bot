@@ -1,0 +1,229 @@
+{
+  "version": 1,
+  "documents": {
+    "ai-personification/characters.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "ai-personification/community-usage.md": {
+      "usage": [
+        "expression",
+        "reference"
+      ]
+    },
+    "ai-personification/creators-and-works.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "ai-personification/INDEX.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "ai-personification/interactive-projects.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "apex-legends/advanced.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "apex-legends/basics.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "apex-legends/bloopers.md": {
+      "usage": [
+        "expression",
+        "reference"
+      ]
+    },
+    "apex-legends/chinese-community.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "apex-legends/creators.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "apex-legends/esports.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "apex-legends/huge-barbecue.md": {
+      "usage": [
+        "expression",
+        "reference"
+      ]
+    },
+    "apex-legends/INDEX.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "apex-legends/kasha-scenes.md": {
+      "usage": [
+        "expression",
+        "reference"
+      ]
+    },
+    "apex-legends/streamer-memes.md": {
+      "usage": [
+        "expression",
+        "reference"
+      ]
+    },
+    "apex-legends/tiger-scenes.md": {
+      "usage": [
+        "expression",
+        "reference"
+      ]
+    },
+    "arknights/basics.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "arknights/black-forest-playbook.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "arknights/creators.md": {
+      "usage": [
+        "expression",
+        "reference"
+      ]
+    },
+    "arknights/INDEX.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "arknights/integrated-strategies.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "arknights/operator-strength.md": {
+      "usage": [
+        "expression",
+        "reference"
+      ]
+    },
+    "arknights/vanguard-protocol.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "arknights/xuelang-strength-memes.md": {
+      "usage": [
+        "expression",
+        "reference"
+      ]
+    },
+    "creators.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "INDEX.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "mental-omega/basics-and-modes.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "mental-omega/chinese-community.md": {
+      "usage": [
+        "expression",
+        "reference"
+      ]
+    },
+    "mental-omega/factions.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "mental-omega/glossary-and-qa.md": {
+      "usage": [
+        "expression",
+        "reference"
+      ]
+    },
+    "mental-omega/INDEX.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "mental-omega/mechanics.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "mental-omega/multiplayer.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "project-moon/canto-10.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "project-moon/chinese-community.md": {
+      "usage": [
+        "expression",
+        "reference"
+      ]
+    },
+    "project-moon/cricket-results.md": {
+      "usage": [
+        "expression",
+        "reference"
+      ]
+    },
+    "project-moon/INDEX.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "project-moon/library-of-ruina.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "project-moon/limbus-company.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "project-moon/lobotomy-corporation.md": {
+      "usage": [
+        "reference"
+      ]
+    },
+    "project-moon/pwie-game-context.md": {
+      "usage": [
+        "expression",
+        "reference"
+      ]
+    },
+    "project-moon/world-and-entry.md": {
+      "usage": [
+        "reference"
+      ]
+    }
+  }
+}

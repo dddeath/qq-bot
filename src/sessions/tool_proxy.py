@@ -119,10 +119,7 @@ def main():
                 if method=='initialize' and 'result' in response:response['result']['capabilities']={'tools':{}}
                 if token:
                     trace.complete(token, response, time.monotonic()-started)
-                    if 'result' in response:
-                        response['result'].setdefault('content', []).insert(0, {
-                            'type':'text', 'text':json.dumps({'read_id':json.loads(token.read_text(encoding='utf-8'))['read_id'],
-                                                           'budget_remaining':trace.remaining(token.parent)})})
+                    response = trace.delivery(token, response)
                 print(json.dumps(response,ensure_ascii=False),flush=True)
                 break
     finally:

@@ -2,7 +2,7 @@
 import json
 import math
 
-VERSION = 'reading-v2'
+VERSION = 'reading-v3'
 
 def generate(task_id, context):
     budget = context['budget']
@@ -13,11 +13,12 @@ def generate(task_id, context):
     policy['overview_tools'] = sorted(OVERVIEW)
     policy['counting_rule'] = '概览类工具最先的3次读取使用概览额度，其余每次调用使用1次补读额度；探索调用另受探索总额度限制。失败调用计数。视频准备、采样、读图分别计数。'
     task = {'task_id':task_id,'task_mode':context['task_mode'],'goal':context['goal'],
-            'context':context.get('task_context',{}),'video':context['video'],'budget_policy':policy}
+            'context':context.get('task_context',{}),'needs':context.get('needs',[]),'video':context['video'],'budget_policy':policy}
     role = ('直接回答用户原请求，返回结论、依据和仍缺材料。' if context['task_mode']=='reading' else
             '依据目标和用户评价原文核对材料，返回新信息、评审意见和仍缺材料。')
     protocol = '''直接调用已开放的只读检索工具完成本任务，不派生子代理。任务数据如下：
 '''+json.dumps(task,ensure_ascii=False)+'''\n先读取廉价基础概览，再依据缺口选择补读。
+若已开放知识工具，表达语境需要使用 search_knowledge 的 expression 分类，事实缺口使用 reference，群成员资料使用 profile；需求可重叠。先取候选，再用 read_knowledge 展开相关片段，只有内容缺失或时效不足时追加联网。按返回的 next 句柄继续读取，版本变化先重新检索。
 所有MCP资料读取统一填写 _reading：task_id、purpose(targeted/explore)、reason(本次要查什么)、relation(与目标的关系)，可附 prior_observation。
 定向须与本任务目标高度相关；探索可以旁支，探索转定向时记录与目标的关联依据。
 原生网页读取先调用 declare_native_read，填写 task_id、native_tool="exec"、native_input(完整网页工具调用代码)、purpose、reason、relation。

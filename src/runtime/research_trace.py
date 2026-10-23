@@ -31,11 +31,13 @@ class ResearchTrace:
             raise ValueError('unknown_reading_task')
         return folder
 
-    def begin(self, goal, video=None, source=None, task_mode="reading", context=None, budget=None):
+    def begin(self, goal, video=None, source=None, task_mode="reading", context=None, budget=None, needs=None):
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('reading_goal_required')
         if task_mode not in ('reading', 'learning') or (context is not None and not isinstance(context, dict)):
             raise ValueError('invalid_reading_task_context')
+        if needs is not None and (not isinstance(needs, list) or any(n not in ('expression','reference','profile') for n in needs)):
+            raise ValueError('invalid_reading_needs')
         task_id = uuid.uuid4().hex
         folder = self.root / task_id
         folder.mkdir()
@@ -47,7 +49,7 @@ class ResearchTrace:
         if (type(limits['max_read_units']) is not int or limits['max_read_units'] < 1
                 or not 0 <= limits['exploration_budget_ratio'] <= 1 or limits['timeout_seconds'] <= 0):
             raise ValueError('invalid_reading_budget')
-        context = dict(goal=goal, video=video, task_mode=task_mode, task_context=context or {}, audit_scope=self.config['scope'],
+        context = dict(goal=goal, video=video, task_mode=task_mode, needs=list(dict.fromkeys(needs or [])), task_context=context or {}, audit_scope=self.config['scope'],
                        task_source='task_entry', request_source=source, budget=limits,
                        recorded_at=dt.datetime.now(dt.timezone.utc).isoformat())
         (folder / 'context.json').write_text(json.dumps(context, ensure_ascii=False), encoding='utf-8')
@@ -128,8 +130,24 @@ class ResearchTrace:
             self.complete(path, {'error': {'message': str(exc), 'type': type(exc).__name__}}, time.monotonic()-started)
             raise
         self.complete(path, response, time.monotonic()-started)
+        return self.delivery(path, response)
+
+    def delivery(self, path, response):
+        """Persist the same bounded result and budget receipt sent to the caller."""
+        response = json.loads(json.dumps(response))
+        record = json.loads(path.read_text(encoding='utf-8'))
         if 'result' in response:
-            response['result'].setdefault('content', []).insert(0, {'type':'text','text':json.dumps({'read_id':json.loads(path.read_text(encoding='utf-8'))['read_id'],'budget_remaining':self.remaining(path.parent)})})
+            response['result'].setdefault('content', []).insert(0, {'type':'text','text':json.dumps({
+                'read_id':record['read_id'], 'budget_remaining':self.remaining(path.parent)})})
+        projected = json.loads(json.dumps(response))
+        images = iter(record['result'].get('images', []))
+        for block in projected.get('result', {}).get('content', []):
+            if block.get('type') == 'image':
+                block.pop('data', None)
+                block['artifact'] = next(images, None)
+        record['delivery'] = projected
+        write_record(path, record)
+        self.report(path.parent)
         return response
 
     def reject(self, tool, arguments, error):
@@ -212,6 +230,8 @@ class ResearchTrace:
         entry['task_mode']={'type':'string','enum':['reading','learning'],'default':'reading'}
         entry['budget']={'type':'object','properties':{'max_read_units':{'type':'integer','minimum':1},'exploration_budget_ratio':{'type':'number','minimum':0,'maximum':1},'timeout_seconds':{'type':'number','exclusiveMinimum':0}},'additionalProperties':False}
         entry['context']={'type':'object','description':'Necessary preceding context and verbatim user evaluation.'}
+        entry['needs']={'type':'array','items':{'type':'string','enum':['expression','reference','profile']},
+                        'description':'Expression/context need, factual information gap, or member identity need; may overlap.'}
         result.append(dict(name='declare_native_read', description='Reserve a native web read before execution. For exec, execute the returned native_input verbatim; its reading token binds actual call-ID results at finish. Do not reuse the token.', inputSchema={
             'type':'object','properties':{'task_id':{'type':'string'},'native_tool':{'type':'string','enum':['exec']},
                 'native_input':{'type':'string'},'purpose':{'type':'string','enum':['targeted','explore']},
