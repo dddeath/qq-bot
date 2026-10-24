@@ -151,6 +151,11 @@ class KnowledgeCatalog:
                 counts[key] = counts.get(key, 0) + 1
         return {'entries': len(entries), 'categories': counts, 'sources': status}
 
+    def export_snapshot(self):
+        """Host-side import boundary: same scoped, clean content as normal reads."""
+        entries, status = self._entries()
+        return {'entries': list(entries.values()), 'sources': status}
+
     def read(self, entry_id, version, section=0, offset=0):
         entries, status = self._entries()
         row = entries.get(entry_id)

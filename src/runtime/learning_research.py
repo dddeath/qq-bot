@@ -14,12 +14,17 @@ import time
 import tomllib
 from pathlib import Path
 
+from knowledge_tools import ALL_TOOLS as KNOWLEDGE_TOOLS, provider_mode
+
 OVERVIEW = {'get_video_metadata', 'get_video_chapters', 'get_video_context', 'search_bilibili_videos', 'web_search', 'get_knowledge_index', 'search_knowledge'}
 ALLOWED = {'search_bilibili_videos','get_video_metadata','get_video_transcript',
  'get_video_comments','get_video_chapters','search_bilibili_creators','get_bilibili_creator_content',
  'get_video_danmaku','get_video_context','get_video_comment_threads','check_bilibili_credentials',
  'watch_video','sample_video_frames','get_frames','get_frame_at','read_external_image',
  'get_knowledge_index','search_knowledge','read_knowledge'}
+
+ALLOWED |= KNOWLEDGE_TOOLS
+OVERVIEW |= {'get_knowledge_tag_index', 'search_knowledge_tags', 'find_knowledge_entries'}
 
 
 def text_projection(value):
@@ -81,6 +86,8 @@ class ReadBudget:
         return dict(overview_units=max(0,3-sum(r[1] for r in rows)),read_units=reads,
             targeted_units=max(0,min(reads,policy.get('max_targeted_units',units)-sum(r[0]=='targeted' and not r[1] for r in rows))),
             exploration_units=max(0,explore-sum(r[0]=='explore' for r in rows)),seconds=max(0,deadline-now),
+            read_seconds=max(0,deadline-now-policy.get('finalization_reserve_seconds',0)),
+            finalization_reserve_seconds=policy.get('finalization_reserve_seconds',0),
             video_polls={video:{'calls':max(0,policy['video_poll_max_calls']-count),
                 'seconds':max(0,min(deadline,first+policy['video_poll_timeout_seconds'])-now)}
                 for video,count,first in polls})
@@ -94,6 +101,8 @@ class ReadBudget:
             saved=db.execute('select data from policy where id=1').fetchone()
             policy=json.loads(saved[0]) if saved else {}
             if time.time()>=deadline:raise ValueError('time_budget_exhausted')
+            if time.time()>=deadline-policy.get('finalization_reserve_seconds',0):
+                raise ValueError('finalization_required: stop reading and call finish_reading_task, then output the final report')
             overview=tool in OVERVIEW and sum(x[1] for x in rows)<3
             if not rows and not overview:raise ValueError('overview_required')
             if tool=='watch_video' and 'video_poll_max_calls' in policy:
@@ -132,6 +141,15 @@ def resolve_research_stop(exit_status, host_stop, remaining, declaration, comple
     return dict(stop_reason='reason_not_recorded',reason='model_ended_without_stop_declaration',basis='missing')
 
 
+def research_summary(folder, declaration):
+    """Keep a recorded conclusion available when the final assistant text is absent."""
+    answer = folder / 'answer.txt'
+    text = answer.read_text(encoding='utf-8') if answer.exists() else ''
+    if text.strip():return text, 'model_final'
+    if declaration:return declaration['conclusion'], 'completion_conclusion'
+    return '', 'missing'
+
+
 async def begin_research_mcp(config_path, arguments, python):
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -153,7 +171,7 @@ def research_servers(config, settings):
     if snapshot_path:
         snapshot = json.loads(Path(snapshot_path).read_text(encoding='utf-8'))
         providers = [(name, server) for name, server in snapshot['servers'].items()
-                     if {'search_knowledge', 'read_knowledge'}.issubset(server.get('tools', []))]
+                     if provider_mode(server)]
         if len(providers) != 1:
             raise ValueError('research_knowledge_provider_must_be_unique')
         name, provider = providers[0]
@@ -276,10 +294,11 @@ def autonomous_research(original,folder,limits,settings, *, task_mode="learning"
     declaration_path=task_folder/'completion.json'
     declaration=json.loads(declaration_path.read_text(encoding='utf-8')) if declaration_path.exists() else None
     stop_record=resolve_research_stop(code,stop,trace.remaining(task_folder),declaration,trace.report(task_folder)['completion_attempts'])
+    summary,summary_source=research_summary(folder,declaration)
     result={'execution_status':execution_status,
-            'status':'completed' if code==0 and not stop and declaration and not any(x['result']['status'] in ('pending','missing_output') for x in reads) else 'partial',
+            'status':'completed' if code==0 and not stop and declaration and summary_source=='model_final' and not any(x['result']['status'] in ('pending','missing_output') for x in reads) else 'partial',
             'reads':reads,'stop_reason':stop_record['stop_reason'],
-            'summary':(folder/'answer.txt').read_text(encoding='utf-8') if (folder/'answer.txt').exists() else '',
+            'stop_record':stop_record,'summary':summary,'summary_source':summary_source,
             'elapsed_seconds':execution['elapsed_seconds'],'video_candidates':payload['video_candidates']}
     structured=trace.report(task_folder) if declaration else trace.finish(task_id,stop_record['stop_reason'],stop_record['reason'],result['summary'] or 'No final report returned.',basis=stop_record['basis'])
     result={**structured,**result}

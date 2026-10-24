@@ -47,8 +47,10 @@ def codex_overrides(path, *, existing_servers=(), conversation=None, host_wait=F
     servers = server_configs(snapshot, path, python=sys.executable,
                              proxy=str(Path(__file__).with_name('tool_proxy.py')), host_wait=host_wait)
     if knowledge_budget:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'runtime'))
+        from knowledge_tools import provider_mode
         for name, config in servers.items():
-            if {'search_knowledge', 'read_knowledge'}.issubset(snapshot['servers'].get(name, {}).get('tools', [])):
+            if provider_mode(snapshot['servers'].get(name, {})):
                 config['args'] += ['--knowledge-budget', str(knowledge_budget)]
     if research_links:
         if not conversation:raise ValueError('research_links_conversation_required')

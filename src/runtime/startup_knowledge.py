@@ -1,16 +1,27 @@
 """Render the two knowledge pages supplied on chat startup."""
 from local_knowledge import Knowledge
+from knowledge_tools import provider_mode, guidance
 
 
-def render_catalog(root, account, group, learning_root=None, budget=800):
+def render_catalog(root, account, group, learning_root=None, budget=800, entry_store=None):
     """Bounded entry points and brief mapping; body retrieval stays on demand."""
     from knowledge_catalog import KnowledgeCatalog
-    catalog = KnowledgeCatalog(root, account, group, learning_root)
-    index = catalog.index()
-    domains = sorted({key.split(':')[0] for key in index['categories']})
-    prefix = ('## 知识入口\n表达需求查 expression，信息缺口查 reference，成员资料查 profile。'
-              '先 search_knowledge，再按候选句柄 read_knowledge。\n领域：' + ', '.join(domains)
-              + '\n已发布学习：' + index['sources']['published_learning'] + '\n')
+    if entry_store:
+        from pathlib import Path
+        from knowledge_entries import EntryStore
+        if not Path(entry_store).is_file(): raise ValueError('knowledge_entry_store_missing')
+        collections = ['formal']
+        if str(account).isdigit() and str(group).isdigit():
+            collections += [f'learning:{account}:{group}', f'profile:{account}:{group}']
+        index = EntryStore(entry_store, collections).index()
+        prefix = ('## 知识入口\n'+guidance('tags')+'\n可读条目：'+str(index['entries'])
+                  +'；Tag 数：'+str(index['tags'])+'；未标注条目：'+str(index['untagged_entries'])+'\n')
+    else:
+        catalog = KnowledgeCatalog(root, account, group, learning_root)
+        index = catalog.index()
+        domains = sorted({key.split(':')[0] for key in index['categories']})
+        prefix = ('## 知识入口\n'+guidance('legacy')+'\n领域：'+', '.join(domains)
+                  +'\n已发布学习：'+index['sources']['published_learning']+'\n')
     page = Knowledge(root, account, group).read(f'group-memory/{account}/{group}/INDEX.md')
     mapping = page.get('text', '') if page.get('found') else ''
     suffix = '\n成员映射未展开部分可通过知识工具读取。'
@@ -38,7 +49,7 @@ def render(root,account,group):
 def render_servers(servers, binding=None):
     """Render only the enabled catalog's host-bound index."""
     catalogs = [server for server in servers.values()
-                if {'search_knowledge', 'read_knowledge'}.issubset(server.get('tools', []))]
+                if provider_mode(server)]
     if not catalogs:
         return ''
     if len(catalogs) != 1:
@@ -48,4 +59,5 @@ def render_servers(servers, binding=None):
     if binding and (account != binding['account_id'] or group != binding['group_id']):
         raise ValueError('startup_knowledge_scope_mismatch')
     return render_catalog(env['QQ_KNOWLEDGE_ROOT'], account, group,
-        env.get('QQ_KNOWLEDGE_LEARNING_ROOT'), int(env.get('QQ_KNOWLEDGE_STARTUP_BUDGET', '800')))
+        env.get('QQ_KNOWLEDGE_LEARNING_ROOT'), int(env.get('QQ_KNOWLEDGE_STARTUP_BUDGET', '800')),
+        env.get('QQ_KNOWLEDGE_ENTRY_STORE'))

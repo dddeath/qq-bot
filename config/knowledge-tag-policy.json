@@ -1,0 +1,864 @@
+{
+  "version": 1,
+  "tags": [
+    {
+      "id": "d-apex",
+      "name": "Apex Legends",
+      "category": "领域",
+      "aliases": [
+        "Apex",
+        "APEX英雄"
+      ],
+      "description": "检索Apex Legends作品内容、机制或社区资料。",
+      "rules": [
+        {
+          "field": "domain",
+          "pattern": "^apex-legends$"
+        },
+        {
+          "field": "title",
+          "pattern": "Apex|ALGS"
+        },
+        {
+          "field": "meaning",
+          "pattern": "Apex|ALGS"
+        },
+        {
+          "field": "conditions",
+          "pattern": "Apex|ALGS"
+        }
+      ]
+    },
+    {
+      "id": "d-ark",
+      "name": "明日方舟",
+      "category": "领域",
+      "aliases": [
+        "方舟"
+      ],
+      "description": "检索明日方舟作品内容、机制或社区资料。",
+      "rules": [
+        {
+          "field": "domain",
+          "pattern": "^arknights$"
+        },
+        {
+          "field": "title",
+          "pattern": "明日方舟(?!：?终末地)|黑流树海|克莱门莎|马特奥|YW-(?:EX)?\\d|精一鹿开"
+        },
+        {
+          "field": "meaning",
+          "pattern": "明日方舟(?!：?终末地)|黑流树海|克莱门莎|马特奥|YW-(?:EX)?\\d|精一鹿开"
+        },
+        {
+          "field": "conditions",
+          "pattern": "明日方舟(?!：?终末地)|黑流树海|克莱门莎|马特奥|YW-(?:EX)?\\d|精一鹿开"
+        }
+      ]
+    },
+    {
+      "id": "d-moon",
+      "name": "月亮计划",
+      "category": "领域",
+      "aliases": [
+        "Project Moon"
+      ],
+      "description": "检索月亮计划作品内容、机制或社区资料。",
+      "rules": [
+        {
+          "field": "domain",
+          "pattern": "^project-moon$"
+        },
+        {
+          "field": "title",
+          "pattern": "月亮计划|边狱巴士|废墟图书馆|脑叶公司|红神辛|环指.*饰品"
+        },
+        {
+          "field": "meaning",
+          "pattern": "月亮计划|边狱巴士|废墟图书馆|脑叶公司|红神辛|环指.*饰品"
+        },
+        {
+          "field": "conditions",
+          "pattern": "月亮计划|边狱巴士|废墟图书馆|脑叶公司|红神辛|环指.*饰品"
+        }
+      ]
+    },
+    {
+      "id": "d-mo",
+      "name": "心灵终结",
+      "category": "领域",
+      "aliases": [
+        "Mental Omega"
+      ],
+      "description": "检索心灵终结作品内容、机制或社区资料。",
+      "rules": [
+        {
+          "field": "domain",
+          "pattern": "^mental-omega$"
+        },
+        {
+          "field": "title",
+          "pattern": "心灵终结"
+        },
+        {
+          "field": "meaning",
+          "pattern": "心灵终结"
+        },
+        {
+          "field": "conditions",
+          "pattern": "心灵终结"
+        }
+      ]
+    },
+    {
+      "id": "d-ai",
+      "name": "AI 拟人二创",
+      "category": "领域",
+      "aliases": [
+        "AI娘",
+        "AI 娘"
+      ],
+      "description": "检索AI 拟人二创作品内容、机制或社区资料。",
+      "rules": [
+        {
+          "field": "domain",
+          "pattern": "^ai-personification$"
+        },
+        {
+          "field": "title",
+          "pattern": "ZipZipPipe|zipzippipe|AI娘|AI 娘|AI拟人|AI 拟人|鲸鱼娘|双子娘"
+        },
+        {
+          "field": "meaning",
+          "pattern": "ZipZipPipe|zipzippipe|AI娘|AI 娘|AI拟人|AI 拟人|鲸鱼娘|双子娘"
+        },
+        {
+          "field": "conditions",
+          "pattern": "ZipZipPipe|zipzippipe|AI娘|AI 娘|AI拟人|AI 拟人|鲸鱼娘|双子娘"
+        }
+      ]
+    },
+    {
+      "id": "d-endfield",
+      "name": "终末地",
+      "category": "领域",
+      "aliases": [
+        "明日方舟：终末地",
+        "Endfield"
+      ],
+      "description": "检索终末地作品内容、机制或社区资料。",
+      "rules": [
+        {
+          "field": "domain",
+          "pattern": "^endfield$"
+        },
+        {
+          "field": "title",
+          "pattern": "终末地|祀的|祀刷新|祀拉球|液化息壤"
+        },
+        {
+          "field": "meaning",
+          "pattern": "终末地|祀的|祀刷新|祀拉球|液化息壤"
+        },
+        {
+          "field": "conditions",
+          "pattern": "终末地|祀的|祀刷新|祀拉球|液化息壤"
+        }
+      ]
+    },
+    {
+      "id": "d-spire",
+      "name": "杀戮尖塔",
+      "category": "领域",
+      "aliases": [
+        "Slay the Spire"
+      ],
+      "description": "检索杀戮尖塔作品内容、机制或社区资料。",
+      "rules": [
+        {
+          "field": "domain",
+          "pattern": "^slay-the-spire$"
+        },
+        {
+          "field": "title",
+          "pattern": "杀戮尖塔"
+        },
+        {
+          "field": "meaning",
+          "pattern": "杀戮尖塔"
+        },
+        {
+          "field": "conditions",
+          "pattern": "杀戮尖塔"
+        }
+      ]
+    },
+    {
+      "id": "d-ygo",
+      "name": "游戏王",
+      "category": "领域",
+      "aliases": [
+        "Yu-Gi-Oh"
+      ],
+      "description": "检索游戏王作品内容、机制或社区资料。",
+      "rules": [
+        {
+          "field": "domain",
+          "pattern": "^yugioh$"
+        },
+        {
+          "field": "title",
+          "pattern": "游戏王|无限泡影|贪欲之壶"
+        },
+        {
+          "field": "meaning",
+          "pattern": "游戏王|无限泡影|贪欲之壶"
+        },
+        {
+          "field": "conditions",
+          "pattern": "游戏王|无限泡影|贪欲之壶"
+        }
+      ]
+    },
+    {
+      "id": "t-black",
+      "name": "黑流树海",
+      "category": "主题",
+      "aliases": [
+        "黑流"
+      ],
+      "description": "查找与黑流树海直接相关的知识和表达。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "黑流树海|精一鹿开"
+        },
+        {
+          "field": "meaning",
+          "pattern": "黑流树海"
+        },
+        {
+          "field": "conditions",
+          "pattern": "黑流树海"
+        }
+      ]
+    },
+    {
+      "id": "t-is",
+      "name": "集成战略",
+      "category": "主题",
+      "aliases": [],
+      "description": "查找与集成战略直接相关的知识和表达。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "集成战略|蒙面集批"
+        }
+      ]
+    },
+    {
+      "id": "t-defense",
+      "name": "卫戍协议",
+      "category": "主题",
+      "aliases": [],
+      "description": "查找与卫戍协议直接相关的知识和表达。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "卫戍协议"
+        }
+      ]
+    },
+    {
+      "id": "t-strength",
+      "name": "角色强度评价",
+      "category": "主题",
+      "aliases": [
+        "强度讨论"
+      ],
+      "description": "查找与角色强度评价直接相关的知识和表达。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "角色强度|强度梗|抓位|狼榜"
+        }
+      ]
+    },
+    {
+      "id": "t-esport",
+      "name": "职业赛事",
+      "category": "主题",
+      "aliases": [
+        "电竞赛事"
+      ],
+      "description": "查找与职业赛事直接相关的知识和表达。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "职业赛事|ALGS|观赛|赛事|电竞|签证"
+        }
+      ]
+    },
+    {
+      "id": "t-creator",
+      "name": "主播与社区表达",
+      "category": "主题",
+      "aliases": [],
+      "description": "查找与主播与社区表达直接相关的知识和表达。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "主播|切片|社区梗|社区表达|翻车场景"
+        }
+      ]
+    },
+    {
+      "id": "t-limbus",
+      "name": "边狱巴士",
+      "category": "主题",
+      "aliases": [
+        "Limbus Company"
+      ],
+      "description": "查找与边狱巴士直接相关的知识和表达。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "边狱巴士|红神辛|环指.*饰品"
+        }
+      ]
+    },
+    {
+      "id": "t-cricket",
+      "name": "罪人斗蛐蛐",
+      "category": "主题",
+      "aliases": [
+        "斗蛐蛐"
+      ],
+      "description": "查找与罪人斗蛐蛐直接相关的知识和表达。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "罪人斗蛐蛐|斗蛐蛐"
+        }
+      ]
+    },
+    {
+      "id": "t-canto10",
+      "name": "边狱第十章",
+      "category": "主题",
+      "aliases": [
+        "第十章"
+      ],
+      "description": "查找与边狱第十章直接相关的知识和表达。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "边狱第十章|西西弗斯商城"
+        }
+      ]
+    },
+    {
+      "id": "t-base",
+      "name": "终末地基建",
+      "category": "主题",
+      "aliases": [],
+      "description": "查找与终末地基建直接相关的知识和表达。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "终末地.*(?:基建|种田)|液气转化机|缘缘庄"
+        }
+      ]
+    },
+    {
+      "id": "t-chile",
+      "name": "智利谐音梗",
+      "category": "主题",
+      "aliases": [
+        "🇨🇱",
+        "智利梗"
+      ],
+      "description": "查找与智利谐音梗直接相关的知识和表达。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "^(?:智利／🇨🇱|🇨🇱)$"
+        }
+      ]
+    },
+    {
+      "id": "t-sticker",
+      "name": "表情包使用",
+      "category": "主题",
+      "aliases": [],
+      "description": "查找与表情包使用直接相关的知识和表达。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "表情包|AI 娘图库"
+        }
+      ]
+    },
+    {
+      "id": "t-ai-chat",
+      "name": "AI 聊天互动",
+      "category": "主题",
+      "aliases": [],
+      "description": "查找与AI 聊天互动直接相关的知识和表达。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "(?<![A-Za-z])AI(?![A-Za-z])|人机|token|智械|人设卡|文爱|DeepSeek|GPT"
+        }
+      ]
+    },
+    {
+      "id": "o-typhon",
+      "name": "提丰",
+      "category": "对象",
+      "aliases": [
+        "Typhon"
+      ],
+      "description": "以提丰为主要讨论对象的条目。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "提丰"
+        }
+      ]
+    },
+    {
+      "id": "o-xuelang",
+      "name": "血狼破军",
+      "category": "对象",
+      "aliases": [
+        "血狼"
+      ],
+      "description": "以血狼破军为主要讨论对象的条目。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "血狼破军|狼榜"
+        }
+      ]
+    },
+    {
+      "id": "o-mateo",
+      "name": "马特奥",
+      "category": "对象",
+      "aliases": [],
+      "description": "以马特奥为主要讨论对象的条目。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "马特奥"
+        }
+      ]
+    },
+    {
+      "id": "o-clem",
+      "name": "克莱门莎",
+      "category": "对象",
+      "aliases": [],
+      "description": "以克莱门莎为主要讨论对象的条目。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "克莱门莎"
+        }
+      ]
+    },
+    {
+      "id": "o-si",
+      "name": "祀",
+      "category": "对象",
+      "aliases": [],
+      "description": "以祀为主要讨论对象的条目。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "^祀的|^祀刷新"
+        }
+      ]
+    },
+    {
+      "id": "o-sunken",
+      "name": "沉沦之人",
+      "category": "对象",
+      "aliases": [],
+      "description": "以沉沦之人为主要讨论对象的条目。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "沉沦之人"
+        }
+      ]
+    },
+    {
+      "id": "o-redsin",
+      "name": "红神辛",
+      "category": "对象",
+      "aliases": [],
+      "description": "以红神辛为主要讨论对象的条目。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "红神辛"
+        }
+      ]
+    },
+    {
+      "id": "o-ring",
+      "name": "环指",
+      "category": "对象",
+      "aliases": [],
+      "description": "以环指为主要讨论对象的条目。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "^环指"
+        }
+      ]
+    },
+    {
+      "id": "o-jinwu",
+      "name": "金乌",
+      "category": "对象",
+      "aliases": [],
+      "description": "以金乌为主要讨论对象的条目。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "^金乌"
+        }
+      ]
+    },
+    {
+      "id": "o-huge",
+      "name": "huge",
+      "category": "对象",
+      "aliases": [],
+      "description": "以huge为主要讨论对象的条目。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "huge"
+        }
+      ]
+    },
+    {
+      "id": "o-sandwich",
+      "name": "三明治",
+      "category": "对象",
+      "aliases": [
+        "虎哥"
+      ],
+      "description": "以三明治为主要讨论对象的条目。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "虎哥.*三明治|三明治"
+        }
+      ]
+    },
+    {
+      "id": "o-kasha",
+      "name": "卡莎",
+      "category": "对象",
+      "aliases": [
+        "卡哥"
+      ],
+      "description": "以卡莎为主要讨论对象的条目。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "卡哥.*卡莎|卡莎"
+        }
+      ]
+    },
+    {
+      "id": "o-zip",
+      "name": "ZipZipPipe",
+      "category": "对象",
+      "aliases": [
+        "zipzippipe"
+      ],
+      "description": "以ZipZipPipe为主要讨论对象的条目。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "ZipZipPipe"
+        }
+      ]
+    },
+    {
+      "id": "o-knight",
+      "name": "骑士（心灵终结）",
+      "category": "对象",
+      "aliases": [],
+      "description": "心灵终结欧盟单位骑士的机制与操作。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "骑士的移动射击"
+        }
+      ]
+    },
+    {
+      "id": "n-explain",
+      "name": "机制解释",
+      "category": "需求",
+      "aliases": [],
+      "description": "用于机制解释时检索相应资料或表达；正文决定具体语气和条件。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "机制|门槛|触发|转形|生效|结算|数值|属性|技力|循环|统计口径|合成"
+        },
+        {
+          "field": "usage",
+          "pattern": "解释|辨认卡牌|排查|为何|机制"
+        }
+      ]
+    },
+    {
+      "id": "n-build",
+      "name": "阵容与路线选择",
+      "category": "需求",
+      "aliases": [
+        "配队建议"
+      ],
+      "description": "用于阵容与路线选择时检索相应资料或表达；正文决定具体语气和条件。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "抓位|开局|路线|构筑|取舍|开荒"
+        },
+        {
+          "field": "usage",
+          "pattern": "规划|配置|选择|挑选|取舍|招募|构筑"
+        },
+        {
+          "field": "situation",
+          "pattern": "推荐|挑选|选择"
+        }
+      ]
+    },
+    {
+      "id": "n-correct",
+      "name": "纠正与核实",
+      "category": "需求",
+      "aliases": [
+        "事实纠正"
+      ],
+      "description": "用于纠正与核实时检索相应资料或表达；正文决定具体语气和条件。",
+      "rules": [
+        {
+          "field": "title",
+          "pattern": "口误"
+        },
+        {
+          "field": "usage",
+          "pattern": "纠正|区分|核对|确认"
+        },
+        {
+          "field": "situation",
+          "pattern": "核实|核对|混淆|记忆.*信息|发现.*错|无依据|凭空|编造"
+        }
+      ]
+    },
+    {
+      "id": "n-apology",
+      "name": "认错挽留",
+      "category": "需求",
+      "aliases": [
+        "认错",
+        "挽留"
+      ],
+      "description": "用于认错挽留时检索相应资料或表达；正文决定具体语气和条件。",
+      "rules": [
+        {
+          "field": "situation",
+          "pattern": "认错|服软|挽留"
+        }
+      ]
+    },
+    {
+      "id": "n-uncertain",
+      "name": "表达不确定",
+      "category": "需求",
+      "aliases": [
+        "不确定性说明"
+      ],
+      "description": "用于表达不确定时检索相应资料或表达；正文决定具体语气和条件。",
+      "rules": [
+        {
+          "field": "situation",
+          "pattern": "不确定|缺少确定|推测|猜测"
+        }
+      ]
+    },
+    {
+      "id": "n-urge",
+      "name": "催促与追问",
+      "category": "需求",
+      "aliases": [
+        "催促",
+        "追问"
+      ],
+      "description": "用于催促与追问时检索相应资料或表达；正文决定具体语气和条件。",
+      "rules": [
+        {
+          "field": "situation",
+          "pattern": "迟迟|催促|没有得到回应|等.*久"
+        }
+      ]
+    },
+    {
+      "id": "n-tease",
+      "name": "轻松调侃",
+      "category": "需求",
+      "aliases": [
+        "吐槽"
+      ],
+      "description": "用于轻松调侃时检索相应资料或表达；正文决定具体语气和条件。",
+      "rules": [
+        {
+          "field": "usage",
+          "pattern": "调侃|接梗|吐槽"
+        },
+        {
+          "field": "situation",
+          "pattern": "调侃|反讽|吐槽|开玩笑|玩笑|自嘲|无语"
+        }
+      ]
+    },
+    {
+      "id": "n-question",
+      "name": "质疑与反问",
+      "category": "需求",
+      "aliases": [
+        "反问"
+      ],
+      "description": "用于质疑与反问时检索相应资料或表达；正文决定具体语气和条件。",
+      "rules": [
+        {
+          "field": "situation",
+          "pattern": "质疑|反问|不解|反驳"
+        }
+      ]
+    },
+    {
+      "id": "n-reassure",
+      "name": "安慰与淡化",
+      "category": "需求",
+      "aliases": [
+        "安慰"
+      ],
+      "description": "用于安慰与淡化时检索相应资料或表达；正文决定具体语气和条件。",
+      "rules": [
+        {
+          "field": "situation",
+          "pattern": "淡化|安慰|担忧"
+        }
+      ]
+    },
+    {
+      "id": "n-praise",
+      "name": "认可与报喜",
+      "category": "需求",
+      "aliases": [
+        "报喜"
+      ],
+      "description": "用于认可与报喜时检索相应资料或表达；正文决定具体语气和条件。",
+      "rules": [
+        {
+          "field": "situation",
+          "pattern": "报喜|认可|赞赏|佩服|夸赞"
+        }
+      ]
+    },
+    {
+      "id": "n-clarify",
+      "name": "询问与澄清",
+      "category": "需求",
+      "aliases": [
+        "询问线索"
+      ],
+      "description": "用于询问与澄清时检索相应资料或表达；正文决定具体语气和条件。",
+      "rules": [
+        {
+          "field": "situation",
+          "pattern": "询问|问对方|澄清"
+        }
+      ]
+    },
+    {
+      "id": "n-end",
+      "name": "结束争论",
+      "category": "需求",
+      "aliases": [
+        "收住话题"
+      ],
+      "description": "用于结束争论时检索相应资料或表达；正文决定具体语气和条件。",
+      "rules": [
+        {
+          "field": "situation",
+          "pattern": "结束话题|不想再争|结束争论"
+        }
+      ]
+    },
+    {
+      "id": "n-evaluate",
+      "name": "直接评价",
+      "category": "需求",
+      "aliases": [
+        "评价优缺点"
+      ],
+      "description": "直接表达判断、偏好或优缺点。",
+      "rules": []
+    },
+    {
+      "id": "n-surprise",
+      "name": "惊讶与感叹",
+      "category": "需求",
+      "aliases": [
+        "惊讶",
+        "感叹"
+      ],
+      "description": "对反差、意外结果或新发现作出反应。",
+      "rules": []
+    },
+    {
+      "id": "n-invite",
+      "name": "邀请参与",
+      "category": "需求",
+      "aliases": [
+        "邀约"
+      ],
+      "description": "邀请对方参与游戏、讨论或其他活动。",
+      "rules": []
+    },
+    {
+      "id": "n-complain",
+      "name": "抱怨与共鸣",
+      "category": "需求",
+      "aliases": [
+        "抱怨",
+        "寻求共鸣"
+      ],
+      "description": "表达糟糕体验、挫折或希望得到理解。",
+      "rules": []
+    },
+    {
+      "id": "n-expect",
+      "name": "表达期待",
+      "category": "需求",
+      "aliases": [
+        "期待"
+      ],
+      "description": "表达想参与、想获得或准备投入的意愿。",
+      "rules": []
+    }
+  ]
+}

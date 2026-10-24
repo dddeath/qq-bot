@@ -1,6 +1,6 @@
 # 知识候选与片段读取
 
-`src/runtime/knowledge_catalog_mcp.py` 提供独立的只读 MCP 服务。运行器已能识别启用该入口的工具快照；线上工具配置尚未切换。
+`src/runtime/knowledge_catalog_mcp.py` 提供独立的只读 MCP 服务。运行器从会话绑定的固定版本工具快照加载该入口。
 
 ## 数据来源
 
@@ -41,7 +41,7 @@
 
 工具快照启用 `search_knowledge`、`read_knowledge` 时，`startup_prompt` 从该工具服务的绑定环境读取领域索引和当前群简短映射。默认知识启动区为 800 估算 token，可通过 `QQ_KNOWLEDGE_STARTUP_BUDGET` 配置；不展开领域正文或完整画像。
 
-配置 `reading_trace` 的既有工具代理与学习检索网关均可调用知识工具。`begin_reading_task.needs` 接受 expression、reference、profile 数组，生成 reading-v3 协议。搜索与索引计入原有概览预算，正文片段计入补读预算；仍保留 300 秒默认总时间及 20% 探索上限。
+配置 `reading_trace` 的既有工具代理与学习检索网关均可调用知识工具。`begin_reading_task.needs` 接受 expression、reference、profile 数组，生成 reading-v6 协议。搜索与索引计入原有概览预算，正文片段计入补读预算；仍保留 300 秒默认总时间及 20% 探索上限。定向补读上限为总补读额度与 18 的较小值；视频准备／查询另限每视频 10 次、180 秒，并受任务总时限约束。
 
 执行器保存实际入参、读取目的、结果和返回投影（含预算回执）；图片投影引用真实保存的像素文件。主会话预算与迁移入口见下节。
 
@@ -62,3 +62,11 @@
 `begin_reading_task` 返回的协议携带 `knowledge_index`。该索引由 MCP 入口根据实际工具配置生成，与主会话启动索引共用 render_servers；目录和简短映射受启动预算限制，正文继续按需读取。独立检索入口可传 needs，供表达、资料、画像需求使用。
 
 主会话 `knowledge-budget.sqlite3` 的 deliveries 保存每次调用的工具、参数、原始返回、实际披露、耗时和预算回执，包括被预算拦截的读取。原始资料仅保留在审计记录中，超限结果不会进入模型。检索任务继续保留自身 task_id、read_id 及读取目的。
+
+## 群聊检索与每日评审接线
+
+`research_migration.wire_research_profile(profile, trace_root=..., native_sessions_directory=...)` 返回配置副本，为已启用的知识、B 站、视频及外部图片只读服务配置同一轨迹存储，并将 `get_video_comment_threads` 加入既有 B 站服务白名单。按现有 ControlPlane 流程登记新 ToolProfile、绑定 Bot、导出快照并重载后生效。
+
+轨迹位于 `trace_root/<account_id>/<group_id>/<task_id>/`，共享协议由 `begin_reading_task` 生成。普通聊天的知识读取可省略 `_reading`，仍使用主轮次预算；带 `_reading` 的检索调用只使用任务预算，不消耗正在运行的其他主轮次预算。其余检索服务要求 `_reading`。
+
+每日评审的 `records_directory` 指向该轨迹根目录，按日期和 `scope` 读取执行器报告。独立补读仅向共享协议传入 `max_read_units`、`exploration_budget_ratio`、`timeout_seconds`；后者由评审剩余时间与 `extension_seconds` 取较小值。兼容旧配置中的 `max_decisions`，但不将其传给原生工具研究会话。原轨迹保持不变，评审输出另存。

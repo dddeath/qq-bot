@@ -23,7 +23,16 @@
           "get_knowledge_index",
           "search_knowledge",
           "read_knowledge"
-        ]
+        ],
+        "reading_trace": {
+          "root": "/absolute/reading-traces/${account_id}/${group_id}",
+          "scope": "qq:${account_id}:group:${group_id}",
+          "native_sessions_directory": "/absolute/codex-home/sessions",
+          "max_read_units": 10,
+          "exploration_budget_ratio": 0.2,
+          "timeout_seconds": 300,
+          "require_context": false
+        }
       }
     }
   }

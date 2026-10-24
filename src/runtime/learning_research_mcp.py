@@ -16,7 +16,8 @@ async def main(config_path):
     from mcp.types import Tool, TextContent
     cfg=json.loads(Path(config_path).read_text(encoding='utf-8'));root=Path(cfg['folder'])
     from startup_knowledge import render_servers
-    trace=ResearchTrace({**cfg['trace'], 'knowledge_index': render_servers(cfg['servers'])});task_id=cfg.get('task_id');app=Server('learning-reads');available={};schemas=[]
+    from knowledge_tools import servers_mode
+    trace=ResearchTrace({**cfg['trace'], 'knowledge_index': render_servers(cfg['servers']), 'knowledge_protocol': servers_mode(cfg['servers'])});task_id=cfg.get('task_id');app=Server('learning-reads');available={};schemas=[]
     async with AsyncExitStack() as stack:
         for name,c in cfg['servers'].items():
             try:

@@ -108,7 +108,8 @@ def main():
         if not allowed.issubset(ALLOWED):
             raise ValueError('reading trace requires read-only research tools')
         from startup_knowledge import render_servers
-        trace = ResearchTrace({**config['reading_trace'], 'knowledge_index': render_servers(snapshot['servers'])})
+        from knowledge_tools import servers_mode
+        trace = ResearchTrace({**config['reading_trace'], 'knowledge_index': render_servers(snapshot['servers']), 'knowledge_protocol': servers_mode(snapshot['servers'])})
         allowed.update(CONTROL_TOOLS)
     child=subprocess.Popen([config['command'],*config.get('args',[])],env=dict(os.environ,**config.get('env',{})),
                            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=sys.stderr,text=True,encoding='utf-8',bufsize=1)
@@ -119,7 +120,6 @@ def main():
             if method not in ('initialize','ping','notifications/initialized','tools/list','tools/call') or (method=='tools/call' and request.get('params',{}).get('name') not in allowed):
                 if 'id' in request:print(json.dumps({'jsonrpc':'2.0','id':request['id'],'error':{'code':-32601,'message':'Tool or method not enabled in this profile'}}),flush=True)
                 continue
-            budget_turn = budget.current() if budget and method == 'tools/call' else None
             token = None
             started = time.monotonic()
             if trace and method == 'tools/call':
@@ -130,14 +130,16 @@ def main():
                         print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{
                             'content':[{'type':'text','text':json.dumps(result,ensure_ascii=False)}]}}),flush=True)
                         continue
-                    token, arguments = trace.prepare(params['name'], params.get('arguments', {}))
-                    request['params'] = {**params, 'arguments': arguments}
-                    line = json.dumps(request, ensure_ascii=False)+'\n'
+                    if config['reading_trace'].get('require_context', True) or '_reading' in params.get('arguments', {}):
+                        token, arguments = trace.prepare(params['name'], params.get('arguments', {}))
+                        request['params'] = {**params, 'arguments': arguments}
+                        line = json.dumps(request, ensure_ascii=False)+'\n'
                 except (ValueError, FileExistsError) as exc:
                     trace.reject(params['name'], params.get('arguments', {}), exc)
                     print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{
                         'isError':True,'content':[{'type':'text','text':str(exc)}]}}),flush=True)
                     continue
+            budget_turn = budget.current() if budget and method == 'tools/call' and token is None else None
             child.stdin.write(line);child.stdin.flush()
             if 'id' not in request:continue
             while True:
@@ -157,9 +159,9 @@ def main():
                     response['result']['tools']=[t for t in response['result'].get('tools',[]) if t['name'] in allowed]
                     if budget:
                         for tool in response['result']['tools']:
-                            tool['description'] = tool.get('description', '') + ' Main-turn knowledge disclosure shares a host-owned budget. Read the returned remaining budget; on turn_disclosure_budget_exhausted stop local reads and answer with available material or delegate the remaining research.'
+                            tool['description'] = tool.get('description', '') + ' Reads without _reading share a host-owned main-turn knowledge budget. Read the returned remaining budget; on turn_disclosure_budget_exhausted stop local reads and answer with available material or delegate the remaining research.'
                     if trace:
-                        response['result']['tools']=trace.schemas(response['result']['tools'])
+                        response['result']['tools']=trace.schemas(response['result']['tools'], require_context=config['reading_trace'].get('require_context', True))
                 if method=='initialize' and 'result' in response:response['result']['capabilities']={'tools':{}}
                 if token:
                     trace.complete(token, response, time.monotonic()-started)

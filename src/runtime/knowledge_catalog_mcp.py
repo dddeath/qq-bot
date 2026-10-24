@@ -34,6 +34,21 @@ def create_app(catalog):
 
 
 def main():
+    entry_store = os.environ.get('QQ_KNOWLEDGE_ENTRY_STORE')
+    if entry_store:
+        from pathlib import Path
+        from knowledge_entries import EntryStore
+        from knowledge_entries_mcp import create_app as create_entry_app
+
+        if not Path(entry_store).is_file():
+            raise ValueError('knowledge_entry_store_missing')
+        account = os.environ.get('QQ_KNOWLEDGE_ACCOUNT', '')
+        group = os.environ.get('QQ_KNOWLEDGE_GROUP', '')
+        collections = ['formal']
+        if account.isdigit() and group.isdigit():
+            collections += [f'learning:{account}:{group}', f'profile:{account}:{group}']
+        create_entry_app(EntryStore(entry_store, collections), read_only=True).run(transport='stdio')
+        return
     catalog = KnowledgeCatalog(os.environ['QQ_KNOWLEDGE_ROOT'],
         os.environ.get('QQ_KNOWLEDGE_ACCOUNT', ''), os.environ.get('QQ_KNOWLEDGE_GROUP', ''),
         os.environ.get('QQ_KNOWLEDGE_LEARNING_ROOT'),

@@ -53,7 +53,9 @@ class ResearchTrace:
                        task_source='task_entry', request_source=source, budget=limits,
                        recorded_at=dt.datetime.now(dt.timezone.utc).isoformat())
         context['knowledge_index'] = self.config.get('knowledge_index', '')
+        context['knowledge_protocol'] = self.config.get('knowledge_protocol', 'legacy')
         context['execution_policy'] = {'max_targeted_units': min(18, limits['max_read_units']),
+                                       'finalization_reserve_seconds': min(60, limits['timeout_seconds'] * .2),
                                        'video_poll_max_calls': 10, 'video_poll_timeout_seconds': 180}
         (folder / 'context.json').write_text(json.dumps(context, ensure_ascii=False), encoding='utf-8')
         ReadBudget(folder / 'budget.db', limits['max_read_units'],
@@ -123,7 +125,7 @@ class ResearchTrace:
         started = time.monotonic()
         try:
             remaining = self.remaining(path.parent)
-            timeout = remaining['seconds']
+            timeout = remaining['read_seconds']
             if tool == 'watch_video':
                 poll = remaining['video_polls'].get(ReadBudget.video_key(args))
                 if poll is not None:timeout = min(timeout,poll['seconds'])

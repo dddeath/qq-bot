@@ -1,20 +1,21 @@
 """Build a revised tool snapshot without writing or activating it."""
 from copy import deepcopy
+from knowledge_tools import LEGACY_TOOLS, TAG_TOOLS, ALL_TOOLS, provider_mode
 
 
 CATALOG_TOOLS = ['get_knowledge_index', 'search_knowledge', 'read_knowledge']
 
 
-def migrate_snapshot(snapshot, *, learning_root):
+def migrate_snapshot(snapshot, *, learning_root, entry_store=None):
     """Host supplies the learning root; preserve session bindings and non-read tools."""
     result = deepcopy(snapshot)
     providers = [server for server in result['servers'].values()
                  if {'search_local_knowledge', 'read_local_knowledge'}.issubset(server.get('tools', []))
-                 or {'search_knowledge', 'read_knowledge'}.issubset(server.get('tools', []))]
+                 or provider_mode(server)]
     if len(providers) != 1:
         raise ValueError('knowledge_provider_must_be_unique')
     provider = providers[0]
-    if set(provider['tools']) - set(CATALOG_TOOLS) - {'search_local_knowledge', 'read_local_knowledge'}:
+    if set(provider['tools']) - ALL_TOOLS - {'search_local_knowledge', 'read_local_knowledge'}:
         raise ValueError('mixed_knowledge_provider_requires_split')
     env = provider.get('env', {})
     if not all(env.get(key) for key in ('QQ_KNOWLEDGE_ROOT', 'QQ_KNOWLEDGE_ACCOUNT', 'QQ_KNOWLEDGE_GROUP')):
@@ -28,18 +29,20 @@ def migrate_snapshot(snapshot, *, learning_root):
         raise ValueError('knowledge_entrypoint_not_recognized')
     index = entrypoints[0]
     args[index] = args[index].replace('local_knowledge.py', 'knowledge_catalog_mcp.py')
-    provider['tools'] = list(CATALOG_TOOLS)
+    store = entry_store or env.get('QQ_KNOWLEDGE_ENTRY_STORE')
+    provider['tools'] = list(TAG_TOOLS if store else LEGACY_TOOLS)
+    if store: env['QQ_KNOWLEDGE_ENTRY_STORE'] = str(store)
     env['QQ_KNOWLEDGE_LEARNING_ROOT'] = str(learning_root)
     for server in result['servers'].values():
         server['tools'] = [tool for tool in server.get('tools', []) if tool != 'read_group_learning']
     return result
 
 
-def migrate_profile(control_plane, profile_ref, *, learning_root):
+def migrate_profile(control_plane, profile_ref, *, learning_root, entry_store=None):
     """Publish a version through the existing registry without rebinding any Bot."""
     if profile_ref.get('kind') != 'tool_profile':
         raise ValueError('tool_profile_reference_required')
     source = control_plane.dereference(profile_ref)
-    body = migrate_snapshot(source['body'], learning_root=learning_root)
+    body = migrate_snapshot(source['body'], learning_root=learning_root, entry_store=entry_store)
     return control_plane.put('tool_profile', source['id'], body,
                              expected_version=source['version'])

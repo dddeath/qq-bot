@@ -44,7 +44,7 @@ class NativeWebRecorder:
             if row['native_call_id']==call_id and row['native_thread_id']==thread:
                 self.calls[(thread,call_id)]=path
             return
-        if row['result']['status']!='pending':return
+        if row['result']['status'] not in ('pending', 'missing_output'):return
         row.update(native_thread_id=thread,native_call_id=call_id)
         write_record(path,row);self.calls[(thread,call_id)]=path
 
@@ -81,7 +81,7 @@ class NativeWebRecorder:
 
     def _complete(self,path,output,event):
         row=json.loads(path.read_text(encoding='utf-8'))
-        if row['result']['status']!='pending':return
+        if row['result']['status'] not in ('pending', 'missing_output'):return
         if output is None:
             row['result']={'status':'missing_output','images':[]}
             row['missing_reason']='native_event_does_not_include_result_content'
@@ -102,6 +102,8 @@ class NativeWebRecorder:
                 else:content.append({'type':'text','text':json.dumps(block,ensure_ascii=False)})
             self.trace.complete(path,{'result':{'content':content}},None)
             row=json.loads(path.read_text(encoding='utf-8'))
+            if 'missing_reason' in row:
+                row['recovered_from_missing_reason']=row.pop('missing_reason')
         evidence=path.with_name('native-event-'+str(row['read_id'])+'.json')
         write_record(evidence,event)
         row['native_completion_event_path']=str(evidence)
@@ -127,11 +129,13 @@ def sync_native_reads(trace, task_id, sessions, *, native_thread_id=None):
     folder=trace.folder(task_id)
     tokens=[p for p in folder.glob('read-*.json') if json.loads(p.read_text(encoding='utf-8'))['arguments'].get('native_tool')=='exec']
     if not tokens:return
-    oldest=min(p.stat().st_mtime for p in tokens)
+    # Evidence files are rewritten during synchronization; their mtime is not
+    # the reservation time and can be newer than the completed native log.
+    oldest=min(json.loads(p.read_text(encoding='utf-8'))['started_at'] for p in tokens)
     candidates={}
     for path in Path(sessions).rglob('rollout-*.jsonl'):
         if native_thread_id and native_thread_id not in path.name:continue
-        if path.stat().st_mtime < oldest:continue
+        if not native_thread_id and path.stat().st_mtime < oldest:continue
         thread=None;calls={};outputs={}
         with path.open(encoding='utf-8') as stream:
             for line in stream:
