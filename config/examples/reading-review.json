@@ -1,0 +1,10 @@
+{
+  "reading_review": {
+    "max_tasks": 3,
+    "per_record_timeout_seconds": 480,
+    "selection_timeout_seconds": 120,
+    "extension_seconds": 150,
+    "max_read_units": 2,
+    "exploration_budget_ratio": 0.5
+  }
+}

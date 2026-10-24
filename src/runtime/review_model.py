@@ -11,7 +11,7 @@ from review_materials import ReviewMaterials
 from review_materials_mcp import cli_arguments
 
 
-def review(reports, root, seconds, settings, prompt, schema):
+def review(reports, root, seconds, settings, prompt, schema, *, response_instructions=None):
     root=Path(root);root.mkdir(parents=True,exist_ok=False)
     started=time.monotonic();deadline=time.time()+seconds
     materials=ReviewMaterials.create(root/'materials',reports)
@@ -26,11 +26,12 @@ def review(reports, root, seconds, settings, prompt, schema):
     schema_path=root/'schema.json';schema_path.write_text(json.dumps(schema),encoding='utf-8')
     command+=['exec','--skip-git-repo-check','--sandbox','read-only','--json','--output-schema',str(schema_path),
               '--output-last-message',str(root/'answer.json'),'--','-']
+    response_instructions=response_instructions or '留出整理评审的时间，来不及阅读的证据写入 limitations，相关分数填 null。逐项给出三类评审结论，明确实际依据。仅输出符合 schema 的评审 JSON。'
     model_prompt=prompt+f'''\n材料目录：{materials.root}
-先用 list_review_materials 读取目录，再按需展开原请求、读取目的与结果、停止结论、独立补读及群聊反馈。
+先用 list_review_materials 读取目录，再按当前任务需要展开材料。
 read_review_material 默认返回字段目录，用 pointer 选择内容；正文按 next_offset 续读，图片用 read_review_image 获取像素。目录计数与图片路径本身不证明已经读过。
-预算剩余 {max(0,seconds-(time.monotonic()-started)):.1f} 秒。材料读取回执包含剩余时间；留出整理评审的时间，来不及阅读的证据写入 limitations，相关分数填 null。
-逐项给出三类评审结论，明确实际依据。仅输出符合 schema 的评审 JSON。
+预算剩余 {max(0,seconds-(time.monotonic()-started)):.1f} 秒。材料读取回执包含剩余时间。
+{response_instructions}
 '''
     (root/'prompt.txt').write_text(model_prompt,encoding='utf-8')
     (root/'input.json').write_text(json.dumps({'materials_directory':str(materials.root),'deadline':deadline},ensure_ascii=False,indent=2),encoding='utf-8')
