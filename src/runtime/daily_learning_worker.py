@@ -124,7 +124,9 @@ def model(batch,run,*,video_config=None,context_reader=None,frame_reader=None):
 
 def instance(config):
 
-    return Learning(config['root'],config['account'],config['group'])
+    return Learning(config['root'],config['account'],config['group'],
+                    session_id=config.get('session_id'),
+                    knowledge_publication=config.get('knowledge_publication'))
 
 
 
@@ -185,7 +187,7 @@ def main():
 
                 video_config=video_settings(cfg)
 
-                result=k.run(lambda batch,run:model(batch,run,video_config=video_config),time.time(),retry_failed=a.retry_failed)
+                result=k.run(lambda batch,run:model(batch,run,video_config=video_config),time.time(),retry_failed=a.retry_failed,retry_publication=a.once)
 
                 if a.once or not result['state'].startswith('already_'):print(json.dumps(result,ensure_ascii=False),flush=True)
 

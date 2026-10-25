@@ -16,9 +16,10 @@ def write(path,value):
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
     tmp=path.with_suffix(path.suffix+'.tmp');tmp.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8');tmp.replace(path)
 class Learning:
-    def __init__(self,root,account,group):
+    def __init__(self,root,account,group,*,session_id=None,knowledge_publication=None):
         self.root=Path(root)/'groups'/str(account)/str(group);self.root.mkdir(parents=True,exist_ok=True)
         self.account=str(account);self.group=str(group)
+        self.session_id=session_id;self.knowledge_publication=knowledge_publication
         self.dbpath=self.root/'learning.sqlite3'
         with self.db() as d:
             d.executescript('''CREATE TABLE IF NOT EXISTS materials(kind TEXT,id TEXT,at REAL,body TEXT,PRIMARY KEY(kind,id));
@@ -87,15 +88,20 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);''')
                 value=json.loads(body)
                 if not query or query.casefold() in body.casefold():result[kind].append(value)
         return {k:v[:max(1,min(limit,100))] for k,v in result.items()}
-    def run(self,model,now=None,*,retry_failed=False):
+    def run(self,model,now=None,*,retry_failed=False,retry_publication=False):
         now=time.time() if now is None else now;day=dt.datetime.fromtimestamp(now,TZ).strftime('%Y-%m-%d')
         run=self.root/'runs'/(dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')+'-'+uuid.uuid4().hex[:8])
         with self.db() as d:
             d.execute('BEGIN IMMEDIATE')
             previous=d.execute('SELECT state,run FROM days WHERE day=?',(day,)).fetchone()
-            if previous and not (retry_failed and previous[0]=='failed'):return dict(state='already_'+previous[0],run=previous[1])
+            if previous and not (retry_failed and previous[0]=='failed'):
+                result=dict(state='already_'+previous[0],run=previous[1])
+                if previous[0]=='completed' and self.knowledge_publication and retry_publication:
+                    from learning_tag_publication import publish_pending
+                    result['knowledge_publication']=publish_pending(self,self.knowledge_publication,Path(previous[1]))
+                return result
             run.mkdir(parents=True);d.execute('INSERT OR REPLACE INTO days VALUES(?,?,?,?)',(day,'started',str(run),now))
-        with recorded(run, purpose='learning', harness='codex', configuration={'model':'gpt-6-astra','effort':'medium','service_tier':'default','release':str(Path(__file__).resolve().parents[2])}) as execution:
+        with recorded(run, purpose='learning', harness='codex', session_id=self.session_id, configuration={'model':'gpt-6-astra','effort':'medium','service_tier':'default','release':str(Path(__file__).resolve().parents[2])}) as execution:
             batch=self.prepare(now)
             write(run/'manifest.json',dict(day=day,account=self.account,group=self.group,cutoff=now,model='gpt-6-astra',effort='medium',service_tier='default',retry_of=previous[1] if previous else None))
             for name,key in [('messages','messages'),('search-completions','searches'),('creator-content','creators')]:
@@ -135,6 +141,9 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);''')
                     d.execute("INSERT OR REPLACE INTO settings VALUES('cursor',?)",(str(now),))
                     d.execute("UPDATE days SET state='completed' WHERE day=?",(day,))
                 receipt=dict(state='completed',run=str(run),accepted={k:len(v) for k,v in clean.items()})
+                if self.knowledge_publication:
+                    from learning_tag_publication import publish_pending
+                    receipt['knowledge_publication']=publish_pending(self,self.knowledge_publication,run)
                 write(run/'apply.json',receipt);write(self.root/'state.json',dict(last_completed_day=day,last_run=str(run),cursor=now))
                 (run/'summary.md').write_text('# 每日学习结果\n\n'+json.dumps(receipt,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
                 execution['result']=receipt
