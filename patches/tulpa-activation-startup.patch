@@ -1,0 +1,10 @@
+--- a/app_mcp.py
++++ b/app_mcp.py
+@@ -3,6 +3,7 @@
+ from fastapi import FastAPI, HTTPException, Request
+ from fastapi.responses import FileResponse, HTMLResponse
+ from chatlocal.config import ROOT
++__import__("activation").configure_activation(ROOT)
+ 
+ 
+ def create_app():

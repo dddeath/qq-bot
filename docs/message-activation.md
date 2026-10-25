@@ -35,4 +35,19 @@ python src/runtime/activation.py --database SESSION_DB --bot-id BOT_ID --version
 
 ## 回退
 
-移除 Tulpa 的 `QQ_BOT_ACTIVATION_CONFIG` 并重载服务即可恢复原消息交付；反向应用补丁可移除入口。保留群聊历史和当前原生模型线程。
+移除服务的启动绑定文件及 `QQ_BOT_ACTIVATION_CONFIG`，再重载服务即可恢复原消息交付；反向应用补丁可移除入口。保留群聊历史和当前原生模型线程。
+
+## 服务启动绑定
+
+在 Tulpa 源码目录应用 `patches/tulpa-activation-startup.patch`，并将对应版本的 `src/runtime` 放入服务的 `PYTHONPATH`。服务启动时先读取自身 `data/activation-binding.json`：
+
+```json
+{
+  "config": "/absolute/config/activation.json",
+  "state": "/absolute/runtime/activation-state.json"
+}
+```
+
+`config` 指向固定 Bot 激活及筛选配置，`state` 与聊天运行器的 `--activation-state` 一致。绑定文件属于实例私有配置，不提交公开仓库。已配置绑定时，它优先于继承环境，将两个路径加载为 `QQ_BOT_ACTIVATION_CONFIG` 和 `QQ_BOT_ACTIVATION_STATE`；配置缺失或格式错误时启动失败，不退回未筛选交付。未建立绑定的实例保留原有环境变量方式。
+
+恢复服务时保留该绑定文件及其目标文件，不从聊天模型进程复制 Tulpa 配置。验收包含消息缓冲、筛选结果、状态文件更新时间；仅进程存活或 MCP ready 不代表筛选生效。

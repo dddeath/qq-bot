@@ -6,6 +6,31 @@ import json
 DEFAULTS = dict(enabled=False, threshold=8, active_idle_timeout_seconds=900,
                 buffer_ttl_seconds=3600, weights=dict(human=1, video_share=5, bot=.5))
 
+def configure_activation(source):
+    """Load the service-owned binding before Tulpa starts accepting requests."""
+    import os
+    from pathlib import Path
+    binding = Path(source) / 'data' / 'activation-binding.json'
+    if not binding.exists():
+        return None  # Existing unbound instances retain their environment configuration.
+    value = json.loads(binding.read_text(encoding='utf-8-sig'))
+    config, state = Path(value['config']), Path(value['state'])
+    if not config.is_absolute() or not state.is_absolute():
+        raise ValueError('activation binding requires absolute config and state paths')
+    settings = json.loads(config.read_text(encoding='utf-8-sig'))
+    if not isinstance(settings.get('bots'), dict) or not settings['bots']:
+        raise ValueError('activation binding requires Bot configuration')
+    for account, bot in settings['bots'].items():
+        ActivationGate(bot, account=account)
+        if bot.get('screening', {}).get('enabled'):
+            runtime = settings['screening_runtime']
+            for field in ('sessions_database', 'state_root', 'evidence_root'):
+                if not Path(runtime[field]).is_absolute():
+                    raise ValueError('screening runtime requires absolute paths')
+    os.environ['QQ_BOT_ACTIVATION_CONFIG'] = str(config.resolve())
+    os.environ['QQ_BOT_ACTIVATION_STATE'] = str(state.resolve())
+    return {'config': str(config.resolve()), 'state': str(state.resolve())}
+
 class ActivationGate:
     def __init__(self, config, *, account):
         self.config = {**DEFAULTS, **config}
