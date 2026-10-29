@@ -2,7 +2,7 @@
 import json
 import math
 
-VERSION = 'reading-v6'
+VERSION = 'reading-v8'
 
 def generate(task_id, context):
     budget = context['budget']
@@ -18,6 +18,13 @@ def generate(task_id, context):
             'knowledge_index':context.get('knowledge_index','')}
     role = ('直接回答用户原请求，返回结论、依据和仍缺材料。' if context['task_mode']=='reading' else
             '依据目标和用户评价原文核对材料，返回新信息、评审意见和仍缺材料。')
+    if context.get('task_context', {}).get('entry') == 'daily_video_learning':
+        role = '''你在每日学习中阅读当前视频，目标依据是视频主题。先看 context.overview 的已采集概览；缺失的基础信息通过工具取得。完整采集材料可用 list_review_materials/read_review_material 按需展开。
+先取得章节目录、必要文字材料，并用 watch_video → sample_video_frames → get_frames 查看一次全片稀疏概览，结合字幕理解内容。初次概览最多18帧、两张拼图。短片按实际长度采样。
+随后依据理解缺口自主选择读取：有章节时按章节定位；无章节时结合概览和时间戳推定分段并注明。sample_video_frames 可用 start_seconds/end_seconds 生成片段概览；get_frames(kind=frames,count=1) 查看已有单帧；get_frame_at 补看指定时刻和事件前后。所有补读共享当前预算，避免逐段重复扫完整片。
+字幕按续读位置展开。评论、楼中楼和弹幕用于理解讨论及反例；需要原公告、动态配图或背景资料时可查 RSS、文章、外部图片与知识库。字幕缺失且画面不能说明口播内容时，如实保留缺口。
+形成主要理解后从未读材料中做少量探索，观察是否改变判断。报告说明视频各主要部分讲了什么、关键条件与新信息，引用本轮 read_id 和时间位置，并列出实际未读的内容。稀疏帧分布到全片不等于理解了每个片段；按实际证据描述覆盖。
+你的报告交给下游提炼知识；工具轨迹单独保存。保留有价值的信息，不以是否值得发布来删去视频内容。'''
     from knowledge_tools import guidance
     knowledge_guidance = guidance(context.get('knowledge_protocol', 'legacy'))
     protocol = '''直接调用已开放的只读检索工具完成本任务，不派生子代理。任务数据如下：

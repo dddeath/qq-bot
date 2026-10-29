@@ -25,9 +25,9 @@ def frame_coverage(frames):
             'missing_slots':missing,'total_slots':len(slots),'note':'Sparse samples only; intervals between samples were not viewed.'}
 
 
-def enrich_videos(batch, run, settings, *, context_reader=None, frame_reader=None, decision_maker=None, exploration_reader=None):
+def enrich_videos(batch, run, settings, *, context_reader=None, frame_reader=None, decision_maker=None, exploration_reader=None, research_runner=None):
     if not settings.get('enabled'):
-        return []
+        return []    if settings.get('autonomous', {}).get('enabled'):        from daily_video_reading import enrich        return enrich(batch, run, settings, execute=research_runner)
     if context_reader is None:
         from bilibili_creator_provider import BilibiliProvider
         provider = BilibiliProvider(settings['bilibili_provider'])

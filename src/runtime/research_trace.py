@@ -49,6 +49,9 @@ class ResearchTrace:
         if (type(limits['max_read_units']) is not int or limits['max_read_units'] < 1
                 or not 0 <= limits['exploration_budget_ratio'] <= 1 or limits['timeout_seconds'] <= 0):
             raise ValueError('invalid_reading_budget')
+        if self.config.get('deadline') is not None:
+            limits['timeout_seconds'] = min(limits['timeout_seconds'], self.config['deadline']-time.time())
+            if limits['timeout_seconds'] <= 0:raise ValueError('time_budget_exhausted')
         context = dict(goal=goal, video=video, task_mode=task_mode, needs=list(dict.fromkeys(needs or [])), task_context=context or {}, audit_scope=self.config['scope'],
                        task_source='task_entry', request_source=source, budget=limits,
                        recorded_at=dt.datetime.now(dt.timezone.utc).isoformat())

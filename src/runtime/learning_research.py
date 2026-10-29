@@ -190,7 +190,7 @@ def research_servers(config, settings):
     return servers
 
 
-def autonomous_research(original,folder,limits,settings, *, task_mode="learning", task_context=None, needs=None):
+def autonomous_research(original,folder,limits,settings, *, task_mode="learning", task_context=None, needs=None, deadline=None):
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=False)
     cfg=tomllib.loads((Path(os.environ['CODEX_HOME'])/'config.toml').read_text())
     servers=research_servers(cfg, settings)
@@ -214,6 +214,7 @@ def autonomous_research(original,folder,limits,settings, *, task_mode="learning"
                   'max_read_units':limits['max_read_units'],'exploration_budget_ratio':limits['exploration_budget_ratio'],
                   'timeout_seconds':limits['timeout_seconds'],
                   'native_sessions_directory':str(Path(os.environ['CODEX_HOME'])/'sessions')}
+    if deadline is not None:trace_config['deadline']=deadline
     trace=ResearchTrace(trace_config)
     from reading_review_runtime import review_input
     goal=review_input(original)['goal_basis']['text']
@@ -221,11 +222,14 @@ def autonomous_research(original,folder,limits,settings, *, task_mode="learning"
     context = task_context if task_context is not None else {
         'review_materials_directory':str(materials.root),
         'review_instructions':'先用 list_review_materials 查目录，读取原目标、停止结论与 research_feedback 中的群回复和评价关联。先选具体核验点，再按相关性展开原证据并执行补读，给实际补读与结论留出时间。read_review_material 用 pointer 或 next_offset 渐进展开；图片用 read_review_image。原证据读取不占联网补读次数，仍受当前补读时间限制；时间不足时用已取得材料收尾并声明停止原因。'}
-    arguments={'goal':goal,'video':original.get('video'),'source':{'kind':'review_extension' if task_mode=='learning' else 'chat_replay','original_task_id':original.get('task_id')},'task_mode':task_mode,'context':context,'budget':limits,'needs':needs or []}
+    arguments={'goal':goal,'video':original.get('video'),'source':original.get('source') or {'kind':'review_extension' if task_mode=='learning' else 'chat_replay','original_task_id':original.get('task_id')},'task_mode':task_mode,'context':context,'budget':limits,'needs':needs or []}
     gateway={'servers':servers,'folder':str(folder.resolve()),'trace':trace_config}
     (folder/'gateway.json').write_text(json.dumps(gateway),encoding='utf-8')
     import asyncio
-    protocol=asyncio.run(begin_research_mcp(folder/'gateway.json',arguments,python))
+    async def begin():
+        call=begin_research_mcp(folder/'gateway.json',arguments,python)
+        return await asyncio.wait_for(call,max(.001,deadline-time.time())) if deadline is not None else await call
+    protocol=asyncio.run(begin())
     task_id=protocol['task_id'];task_folder=trace.folder(task_id);budget=ReadBudget(task_folder/'budget.db')
     gateway['task_id']=task_id
     (folder/'gateway.json').write_text(json.dumps(gateway),encoding='utf-8')

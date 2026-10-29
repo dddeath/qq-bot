@@ -62,6 +62,27 @@ def import_existing(k,legacy,*,refresh=False):
 
 
 
+def learning_input(batch, run):
+    from copy import deepcopy
+    projected = deepcopy(batch); reports = {}
+    for item in projected.get('creators', []):
+        reading = item.get('video_reading', {})
+        if reading.get('mode') != 'unified_research' or not reading.get('report_path'): continue
+        report = json.loads(Path(reading['report_path']).read_text(encoding='utf-8'))
+        reports[f'video_{len(reports)+1}'] = {**report, 'source_id': item['id'],
+                                           'creator_material': {k:v for k,v in item.items() if k != 'video_reading'}}
+        item['content'] = {'scope': 'autonomous_video_report', 'overview': reading.get('overview', {})}
+    directory = None
+    prompt = (Path(__file__).resolve().parents[2]/'prompts/daily-learning.md').read_text(encoding='utf-8-sig')
+    prompt += '\n本轮材料：\n'+json.dumps(projected, ensure_ascii=False)
+    prompt += '\n已有学习：\n'+(run/'input/existing-learning.json').read_text(encoding='utf-8')
+    if reports:
+        from review_materials import ReviewMaterials
+        directory = ReviewMaterials.create(run/'review/video-materials', reports).root
+        prompt += f'\n视频阅读的完整材料目录：{directory}\n先读取摘要，按提炼需要用 list_review_materials 查目录、read_review_material 展开原始结果、read_review_image 查看已有图片。视频报告中的 source_id 对应本轮 creators 的 id。这里只读本批材料，不再联网补读。'
+    return prompt, directory
+
+
 def model(batch,run,*,video_config=None,context_reader=None,frame_reader=None):
 
     from daily_video import enrich_videos
@@ -76,17 +97,19 @@ def model(batch,run,*,video_config=None,context_reader=None,frame_reader=None):
 
     config=tomllib.loads((Path(os.environ['CODEX_HOME'])/'config.toml').read_text())
 
-    prompt=(Path(__file__).resolve().parents[2]/'prompts/daily-learning.md').read_text(encoding='utf-8-sig')
-
-    prompt+='\n本轮材料：\n'+json.dumps(batch,ensure_ascii=False)
-
-    prompt+='\n已有学习：\n'+(run/'input/existing-learning.json').read_text()
+    prompt, materials = learning_input(batch, run)
+    (run/'model-input.txt').write_text(prompt, encoding='utf-8')
 
     # A fresh thread and normal tier; no QQ or other MCP tools in this worker.
 
     cmd=['codex','-a','never','-m','gpt-6-astra','-c','model_reasoning_effort="medium"','-c','service_tier="default"','-c','web_search="disabled"','-c','features.image_generation=false']
 
     for name in config.get('mcp_servers',{}):cmd+=['-c',f'mcp_servers.{name}.enabled=false']
+
+    if materials:
+        import sys
+        from review_materials_mcp import cli_arguments
+        cmd += cli_arguments(materials, sys.executable, time.time()+1800)
 
     cmd+=['exec','--skip-git-repo-check','--sandbox','read-only','--json','--output-schema',str((Path(__file__).resolve().parents[2]/'config/daily-learning-schema.json')),'--output-last-message',str(run/'review/answer.json')]
 
@@ -116,7 +139,11 @@ def model(batch,run,*,video_config=None,context_reader=None,frame_reader=None):
 
         e=json.loads(line);i=e.get('item',{})
 
-        if i.get('type') in ('command_execution','mcp_tool_call','web_search'):raise RuntimeError('unexpected_learning_tool_call')
+        if i.get('type') == 'mcp_tool_call':
+            from review_materials_mcp import TOOLS
+            if not materials or i.get('server') != 'review_materials' or i.get('tool') not in TOOLS:
+                raise RuntimeError('unexpected_learning_tool_call')
+        elif i.get('type') in ('command_execution','web_search'):raise RuntimeError('unexpected_learning_tool_call')
 
     return json.loads((run/'review/answer.json').read_text())
 
@@ -158,7 +185,7 @@ def collect_creators(k,cfg,now):
 
 def video_settings(config):
     return {**config.get('video_reading',{}),
-            **{key:config[key] for key in ('account','group','access_db') if key in config},
+            **{key:config[key] for key in ('account','group','access_db','tool_snapshot') if key in config},
             'bilibili_provider':config.get('bilibili_provider',{}),
             'reading_review':config.get('reading_review',config.get('video_reading',{}).get('reading_review',{}))}
 
