@@ -26,6 +26,7 @@ class Learning:
 CREATE TABLE IF NOT EXISTS published(kind TEXT,id TEXT,body TEXT,PRIMARY KEY(kind,id));
 CREATE TABLE IF NOT EXISTS days(day TEXT PRIMARY KEY,state TEXT,run TEXT,cutoff REAL);
 CREATE TABLE IF NOT EXISTS applied(run TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS publication_applied(run TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);''')
     @contextmanager
     def db(self):
@@ -88,19 +89,72 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);''')
                 value=json.loads(body)
                 if not query or query.casefold() in body.casefold():result[kind].append(value)
         return {k:v[:max(1,min(limit,100))] for k,v in result.items()}
-    def run(self,model,now=None,*,retry_failed=False,retry_publication=False):
+    def finish_publication_retry(self,run,publication):
+        if publication.get('status')!='published':return
+        run=Path(run)
+        manifest=json.loads((run/'manifest.json').read_text(encoding='utf-8'))
+        admission=json.loads((run/'review/tag-admission.json').read_text(encoding='utf-8'))
+        clean={'expressions':[],'meanings':[]}
+        for record in admission['records']:
+            if record['status']=='approved':clean[record['candidate']['kind']].append(record['value'])
+        for kind,values in clean.items():write(run/'published'/(kind+'.json'),values)
+        with self.db() as db:
+            if not db.execute('SELECT 1 FROM publication_applied WHERE run=?',(str(run),)).fetchone():
+                for kind,values in clean.items():
+                    for value in values:db.execute('INSERT OR REPLACE INTO published VALUES(?,?,?)',(kind,value['id'],json.dumps(value,ensure_ascii=False)))
+                db.execute('INSERT INTO publication_applied VALUES(?)',(str(run),))
+            db.execute('INSERT OR IGNORE INTO applied VALUES(?)',(str(run),))
+            cursor=db.execute("SELECT value FROM settings WHERE key='cursor'").fetchone()
+            cutoff=max(float(cursor[0]) if cursor else 0,manifest['cutoff'])
+            db.execute("INSERT OR REPLACE INTO settings VALUES('cursor',?)",(str(cutoff),))
+            db.execute("UPDATE days SET state='completed' WHERE run=?",(str(run),))
+        summary={name:sum(r['status']==state for r in admission['records']) for name,state in
+                 [('approved','approved'),('pending','pending'),('discarded','discarded')]}
+        apply=dict(state='completed',run=str(run),accepted={k:len(v) for k,v in clean.items()},
+                   tag_admission={**summary,'evidence':str(run/'review/tag-admission.json')},
+                   knowledge_publication=publication)
+        write(run/'apply.json',apply)
+        validation=json.loads((run/'review/validation.json').read_text(encoding='utf-8'))
+        validation['accepted']=apply['accepted'];write(run/'review/validation.json',validation)
+        receipt=json.loads((run/'run-receipt.json').read_text(encoding='utf-8'))
+        receipt['result']=apply
+        receipt['publication_recovery']=dict(status='completed',at=dt.datetime.now(dt.timezone.utc).isoformat())
+        write(run/'run-receipt.json',receipt)
+        (run/'summary.md').write_text('# 每日学习结果\n\n'+json.dumps(apply,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+    def recover_publications(self,now):
+        if not self.knowledge_publication:return
+        for manifest in sorted((self.root/'runs').glob('*/manifest.json')):
+            at=json.loads(manifest.read_text())['cutoff'];run=manifest.parent
+            if not now-RETENTION<=at<=now:continue
+            if not (run/'review/tag-admission.json').exists():continue
+            publication=run/'tag-publication.json'
+            if not publication.exists():continue
+            publication=json.loads(publication.read_text())
+            if publication.get('status')!='published':continue
+            with self.db() as db:
+                applied=db.execute('SELECT 1 FROM publication_applied WHERE run=?',(str(run),)).fetchone()
+            receipt=run/'run-receipt.json';apply=run/'apply.json'
+            complete=(applied and apply.exists() and receipt.exists()
+                and json.loads(apply.read_text()).get('state')=='completed'
+                and json.loads(receipt.read_text()).get('result',{}).get('knowledge_publication',{}).get('status')=='published')
+            if not complete:self.finish_publication_retry(run,publication)
+    def run(self,model,now=None,*,retry_failed=False,retry_publication=False,tag_sessions=None):
         now=time.time() if now is None else now;day=dt.datetime.fromtimestamp(now,TZ).strftime('%Y-%m-%d')
+        self.recover_publications(now)
         run=self.root/'runs'/(dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')+'-'+uuid.uuid4().hex[:8])
         with self.db() as d:
             d.execute('BEGIN IMMEDIATE')
             previous=d.execute('SELECT state,run FROM days WHERE day=?',(day,)).fetchone()
-            if previous and not (retry_failed and previous[0]=='failed'):
-                result=dict(state='already_'+previous[0],run=previous[1])
-                if previous[0]=='completed' and self.knowledge_publication and retry_publication:
-                    from learning_tag_publication import publish_pending
-                    result['knowledge_publication']=publish_pending(self,self.knowledge_publication,Path(previous[1]))
-                return result
-            run.mkdir(parents=True);d.execute('INSERT OR REPLACE INTO days VALUES(?,?,?,?)',(day,'started',str(run),now))
+            reuse=previous and not (retry_failed and previous[0]=='failed')
+            if not reuse:
+                run.mkdir(parents=True);d.execute('INSERT OR REPLACE INTO days VALUES(?,?,?,?)',(day,'started',str(run),now))
+        if reuse:
+            result=dict(state='already_'+previous[0],run=previous[1])
+            if previous[0]=='completed' and self.knowledge_publication and retry_publication:
+                from learning_tag_publication import publish_pending
+                result['knowledge_publication']=publish_pending(self,self.knowledge_publication,Path(previous[1]))
+                self.finish_publication_retry(previous[1],result['knowledge_publication'])
+            return result
         with recorded(run, purpose='learning', harness='codex', session_id=self.session_id, configuration={'model':'gpt-6-astra','effort':'medium','service_tier':'default','release':str(Path(__file__).resolve().parents[2])}) as execution:
             batch=self.prepare(now)
             write(run/'manifest.json',dict(day=day,account=self.account,group=self.group,cutoff=now,model='gpt-6-astra',effort='medium',service_tier='default',retry_of=previous[1] if previous else None))
@@ -113,7 +167,9 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);''')
                 write(run/'review/candidates.json',output)
                 sources={str(x['id']):x for x in batch['messages']+batch['searches']+batch['creators']}
                 clean={'expressions':[],'meanings':[]};rejected=[]
+                drafts={'expressions':[],'meanings':[]}
                 for kind in clean:
+                    seen=set()
                     for item in output.get(kind,[]):
                         ids=item.get('source_ids',[])
                         if not ids or any(str(i) not in sources for i in ids):
@@ -128,26 +184,39 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);''')
                         value={k:item[k] for k in keys}
                         identity=value.get('term',value.get('surface_form',''))
                         value['id']=uuid.uuid5(uuid.NAMESPACE_URL,self.account+'/'+self.group+'/'+kind+'/'+identity).hex
+                        if value['id'] in seen:
+                            rejected.append(dict(kind=kind,item=item,reason='duplicate_identity'));continue
+                        seen.add(value['id'])
                         clean[kind].append(value)
+                        drafts[kind].append(item)
                 referenced={str(i) for kind in clean for item in output.get(kind,[]) for i in item.get('source_ids',[]) if str(i) in sources}
                 write(run/'review/evidence.json',{i:sources[i] for i in referenced})
                 write(run/'review/assessments.json',{'rejected':rejected})
                 write(run/'review/validation.json',{'valid':True,'accepted':{k:len(v) for k,v in clean.items()}})
+                from learning_tag_admission import admit
+                clean, admission = admit(self, clean, drafts, sources, run, sessions=tag_sessions)
+                publication=None
+                if self.knowledge_publication:
+                    from learning_tag_publication import publish_pending
+                    publication=publish_pending(self,self.knowledge_publication,run)
+                    if publication.get('status')!='published':
+                        clean={'expressions':[],'meanings':[]}
+                write(run/'review/validation.json',{'valid':True,'accepted':{k:len(v) for k,v in clean.items()},'tag_admission':admission})
                 for kind,values in clean.items():write(run/'published'/(kind+'.json'),values)
                 with self.db() as d:
                     for kind,values in clean.items():
                         for value in values:d.execute('INSERT OR REPLACE INTO published VALUES(?,?,?)',(kind,value['id'],json.dumps(value,ensure_ascii=False)))
+                    if publication and publication.get('status')=='published':
+                        d.execute('INSERT INTO publication_applied VALUES(?)',(str(run),))
                     d.execute('INSERT INTO applied VALUES(?)',(str(run),))
                     d.execute("INSERT OR REPLACE INTO settings VALUES('cursor',?)",(str(now),))
                     d.execute("UPDATE days SET state='completed' WHERE day=?",(day,))
-                receipt=dict(state='completed',run=str(run),accepted={k:len(v) for k,v in clean.items()})
-                if self.knowledge_publication:
-                    from learning_tag_publication import publish_pending
-                    receipt['knowledge_publication']=publish_pending(self,self.knowledge_publication,run)
+                receipt=dict(state='completed',run=str(run),accepted={k:len(v) for k,v in clean.items()},tag_admission=admission)
+                if publication is not None:receipt['knowledge_publication']=publication
                 write(run/'apply.json',receipt);write(self.root/'state.json',dict(last_completed_day=day,last_run=str(run),cursor=now))
                 (run/'summary.md').write_text('# 每日学习结果\n\n'+json.dumps(receipt,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
                 execution['result']=receipt
                 return receipt
             except Exception as exc:
                 with self.db() as d:d.execute("UPDATE days SET state='failed' WHERE day=?",(day,))
-                write(run/'apply.json',dict(state='failed',error=str(exc)));raise
+                write(run/'apply.json',dict(state='failed',error=str(exc)));raise

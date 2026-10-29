@@ -18,7 +18,7 @@ def write_json(path, value):
     Path(path).write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
-def prepare_update(base_snapshot, mappings, entries, policy, annotations, output):
+def prepare_update(base_snapshot, mappings, entries, policy, annotations, output, *, reviewed_tags=None):
     """Preserve IDs and local edits. Missing sources remain pending, not deleted."""
     raw = Path(base_snapshot).read_bytes()
     base = json.loads(raw)
@@ -26,7 +26,7 @@ def prepare_update(base_snapshot, mappings, entries, policy, annotations, output
     old = {m['old_id']: dict(m) for m in mappings}
     if len(old) != len(mappings):
         raise ValueError('duplicate_mapping')
-    importer = TagImporter(policy, annotations)
+    importer = TagImporter(policy, annotations) if reviewed_tags is None else None
     seen = set()
     prepared = []
     for e in entries:
@@ -35,12 +35,22 @@ def prepare_update(base_snapshot, mappings, entries, policy, annotations, output
         seen.add(e['entry_id'])
         if not e['title'].strip() or not e['text'].strip():
             raise ValueError('empty_source_entry')
-        collection = importer.collection(e)
+        collection = TagImporter.collection(e)
         try:
             previous = old.get(e['entry_id'], {})
             reviewed = any(v.get('field') == 'reviewed_annotation'
                            for m in previous.get('decisions', []) for v in m['evidence'])
-            if reviewed and e['entry_id'] not in annotations:
+            if reviewed_tags is not None:
+                annotation=annotations.get(e['entry_id'], {})
+                if (not annotation.get('reason') or not annotation.get('tags')
+                        or not set(annotation['tags'])<=reviewed_tags.keys()):
+                    raise ValueError('invalid_annotation')
+                expected=digest(e['text'].encode())
+                if annotation.get('content_sha256')!=expected:
+                    raise ValueError('annotation_source_changed')
+                matches=[dict(tag_id=t, evidence=[dict(field='reviewed_annotation',
+                         reason=annotation['reason'],content_sha256=expected)]) for t in annotation['tags']]
+            elif reviewed and e['entry_id'] not in annotations:
                 if digest(e['text'].encode()) != previous['content_sha256']:
                     raise ValueError('annotation_source_changed')
                 matches = previous['decisions']
@@ -58,7 +68,7 @@ def prepare_update(base_snapshot, mappings, entries, policy, annotations, output
     (out / 'snapshot.json').write_bytes(raw)
     collections = {e['collection'] for e in base['entries'].values()} | {c for _, c, _, _ in prepared}
     store = EntryStore(out / 'snapshot.json', collections)
-    definitions = {t['id']: t for t in policy['tags']}
+    definitions = reviewed_tags if reviewed_tags is not None else {t['id']: t for t in policy['tags']}
     changes = []
     registered = set()
     for e, collection, matches, error in prepared:
@@ -81,6 +91,9 @@ def prepare_update(base_snapshot, mappings, entries, policy, annotations, output
             continue
         for tag_id in tags:
             if tag_id in registered:
+                continue
+            if reviewed_tags is not None and tag_id in base['tags']:
+                registered.add(tag_id)
                 continue
             tag = definitions[tag_id]
             store.put_tag(tag_id, tag['name'], tag['category'], tag['aliases'], tag['description'])
