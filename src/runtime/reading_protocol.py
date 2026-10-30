@@ -26,9 +26,16 @@ def generate(task_id, context):
 形成主要理解后从未读材料中做少量探索，观察是否改变判断。报告说明视频各主要部分讲了什么、关键条件与新信息，引用本轮 read_id 和时间位置，并列出实际未读的内容。稀疏帧分布到全片不等于理解了每个片段；按实际证据描述覆盖。
 你的报告交给下游提炼知识；工具轨迹单独保存。保留有价值的信息，不以是否值得发布来删去视频内容。'''
     from knowledge_tools import guidance
-    knowledge_guidance = guidance(context.get('knowledge_protocol', 'legacy'))
+    application=context.get('knowledge_application')
+    knowledge_guidance = guidance(context.get('knowledge_protocol', 'legacy'),application)
+    from knowledge_application import policy as application_policy
+    selected=application_policy(application)
+    preference=selected['enabled'] and selected['strategy']=='gain'
+    if preference:
+        knowledge_guidance+='\n本任务已通过检索裁决，按目标与预算完成读取，不重复判断是否启动。'
+    next_read=('再依据任务目标与具体增益选择补读。' if preference else '再依据缺口选择补读。')
     protocol = '''直接调用已开放的只读检索工具完成本任务，不派生子代理。任务数据如下：
-'''+json.dumps(task,ensure_ascii=False)+'''\n先读取廉价基础概览，再依据缺口选择补读。
+'''+json.dumps(task,ensure_ascii=False)+'''\n先读取廉价基础概览，'''+next_read+'''
 '''+knowledge_guidance+''' 
 所有MCP资料读取统一填写 _reading：task_id、purpose(targeted/explore)、reason(本次要查什么)、relation(与目标的关系)，可附 prior_observation。
 定向须与本任务目标高度相关；探索可以旁支，探索转定向时记录与目标的关联依据。

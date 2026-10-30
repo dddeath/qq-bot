@@ -17,6 +17,7 @@ from context_runner import ChatLoop
 from chat_guidance import GuidanceProjection
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'sessions'))
 from qq_tool_runtime import load_snapshot, startup_prompt, codex_overrides
+from runtime_configuration import chat_policy
 
 
 HOST_WAIT_INSTRUCTIONS = '''
@@ -52,9 +53,10 @@ def event_inputs(event):
 
 
 class EventSession:
-    def __init__(self, native, timeout, knowledge_budget=None, knowledge_limit=2500, research_links=None):
+    def __init__(self, native, timeout, knowledge_budget=None, knowledge_limit=2500, research_links=None, knowledge_application=None):
         self.native, self.timeout = native, timeout
         self.research_links = research_links
+        self.knowledge_application = knowledge_application
         self.knowledge_budget, self.knowledge_limit = knowledge_budget, knowledge_limit
         self.guidance = GuidanceProjection()
         self.compaction_generation = 0
@@ -71,7 +73,10 @@ class EventSession:
         if self.research_links:
             event = self.research_links.register(event)
         if self.knowledge_budget:
-            self.knowledge_budget.begin(uuid.uuid4().hex, self.knowledge_limit)
+            turn_id=uuid.uuid4().hex
+            self.knowledge_budget.begin(turn_id, self.knowledge_limit)
+            if self.knowledge_application:
+                self.knowledge_application.begin_turn(turn_id,event)
         projected, snapshot = self.guidance.prepare(event)
         generation = self.compaction_generation
         result = self.native.run_turn(event_inputs(projected), timeout=self.timeout)
@@ -127,6 +132,7 @@ def read_body(wire):
 
 def run_context_chat(run, thread, *, policy, tulpa_session, conversation, activation_state):
     run = Path(run)
+    policy=chat_policy(policy,conversation)
     home = Path(os.environ['CODEX_HOME'])
     config = tomllib.loads((home/'config.toml').read_text(encoding='utf-8'))
     tulpa = config['mcp_servers']['tulpa']
@@ -168,10 +174,16 @@ def run_context_chat(run, thread, *, policy, tulpa_session, conversation, activa
         overrides['mcp_servers.chat_wait.enabled'] = False
     prompt=(run/'prompt.txt').read_text(encoding='utf-8-sig')
     snapshot_path=(policy or {}).get('tool_snapshot')
+    application=None
+    application_path=None
     if snapshot_path:
         snapshot=load_snapshot(snapshot_path,conversation=conversation)
+        if policy.get('knowledge_application',{}).get('enabled'):
+            from knowledge_application import Application
+            application=Application.for_run(run,snapshot)
+            application_path=application.path
         prompt=startup_prompt(prompt,snapshot)
-        overrides.update(codex_overrides(snapshot_path,existing_servers=config.get('mcp_servers',{}),conversation=conversation,host_wait=True,knowledge_budget=run/'knowledge-budget.sqlite3',research_links=run/'research-links.sqlite3'))
+        overrides.update(codex_overrides(snapshot_path,existing_servers=config.get('mcp_servers',{}),conversation=conversation,host_wait=True,knowledge_budget=run/'knowledge-budget.sqlite3',research_links=run/'research-links.sqlite3',knowledge_application=application_path))
         for key in list(overrides):
             if key.endswith('.enabled_tools'):
                 overrides[key]=[name for name in overrides[key] if name!='wait_chat_messages']
@@ -214,7 +226,7 @@ def run_context_chat(run, thread, *, policy, tulpa_session, conversation, activa
             from research_links import ReportLinks
             event_session = EventSession(native, compact.get('operation_timeout_seconds', 600),
                 TurnBudget(run/'knowledge-budget.sqlite3'), context.get('knowledge_turn_estimated_tokens', 2500),
-                ReportLinks(run/'research-links.sqlite3', conversation))
+                ReportLinks(run/'research-links.sqlite3', conversation),application)
             loop = ChatLoop(event_session, tulpa_session,
                             window=window, policy=strategy, record=record)
             def record_run(item):

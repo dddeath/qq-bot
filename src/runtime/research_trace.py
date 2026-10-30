@@ -32,15 +32,45 @@ class ResearchTrace:
         return folder
 
     def begin(self, goal, video=None, source=None, task_mode="reading", context=None, budget=None, needs=None):
+        return self._begin(uuid.uuid4().hex, goal, video, source, task_mode, context, budget, needs)
+
+    def begin_once(self, task_id, arguments):
+        """Caller serializes one decision; a retry preserves its task and elapsed budget."""
+        if len(task_id)!=32 or any(c not in '0123456789abcdef' for c in task_id):
+            raise ValueError('invalid_reading_task_id')
+        folder=self.root/task_id
+        if not (folder/'context.json').exists():
+            self._begin(task_id, **arguments)
+        else:
+            context=json.loads((folder/'context.json').read_text(encoding='utf-8'))
+            if context['audit_scope']!=self.config['scope']:
+                raise ValueError('reading_scope_mismatch')
+            limits=context['budget']
+            elapsed=time.time()-dt.datetime.fromisoformat(context['recorded_at']).timestamp()
+            ReadBudget(folder/'budget.db', limits['max_read_units'],limits['exploration_budget_ratio'],
+                       max(0,limits['timeout_seconds']-elapsed),context['execution_policy'])
+            if not (folder/'protocol.json').exists():
+                from reading_protocol import generate
+                write_record(folder/'protocol.json',generate(task_id,context))
+        self.report(folder)
+        return {'task_id':task_id,**json.loads((folder/'protocol.json').read_text(encoding='utf-8')),
+                'budget_remaining':self.remaining(folder)}
+
+    def validate_application_budget(self, requested=None):
+        requested={} if requested is None else requested
+        if not isinstance(requested,dict):raise ValueError('invalid_reading_budget')
+        for key,default in (('max_read_units',10),('timeout_seconds',300)):
+            limit=self.config.get(key,default);value=requested.get(key,limit)
+            if type(value) not in (int,float):raise ValueError('invalid_reading_budget')
+            if value>limit:raise ValueError('reading_budget_exceeds_application_limit:'+key)
+
+    def validate_begin(self, goal, video=None, source=None, task_mode="reading", context=None, budget=None, needs=None):
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('reading_goal_required')
         if task_mode not in ('reading', 'learning') or (context is not None and not isinstance(context, dict)):
             raise ValueError('invalid_reading_task_context')
         if needs is not None and (not isinstance(needs, list) or any(n not in ('expression','reference','profile') for n in needs)):
             raise ValueError('invalid_reading_needs')
-        task_id = uuid.uuid4().hex
-        folder = self.root / task_id
-        folder.mkdir()
         limits = {k: self.config.get(k, default) for k, default in
                   [('max_read_units', 10), ('exploration_budget_ratio', .2), ('timeout_seconds', 300)]}
         if budget is not None:
@@ -52,15 +82,27 @@ class ResearchTrace:
         if self.config.get('deadline') is not None:
             limits['timeout_seconds'] = min(limits['timeout_seconds'], self.config['deadline']-time.time())
             if limits['timeout_seconds'] <= 0:raise ValueError('time_budget_exhausted')
+        return limits
+
+    def _begin(self, task_id, goal, video=None, source=None, task_mode="reading", context=None, budget=None, needs=None):
+        limits=self.validate_begin(goal,video,source,task_mode,context,budget,needs)
+        from knowledge_application import policy, GAIN_PROTOCOL_VERSION
+        application=policy(self.config.get('knowledge_application'))
+        folder=self.root/task_id
+        folder.mkdir(exist_ok=True)
         context = dict(goal=goal, video=video, task_mode=task_mode, needs=list(dict.fromkeys(needs or [])), task_context=context or {}, audit_scope=self.config['scope'],
                        task_source='task_entry', request_source=source, budget=limits,
                        recorded_at=dt.datetime.now(dt.timezone.utc).isoformat())
         context['knowledge_index'] = self.config.get('knowledge_index', '')
         context['knowledge_protocol'] = self.config.get('knowledge_protocol', 'legacy')
+        if application['enabled']:
+            context['knowledge_application']=application
+            if application['strategy'] == 'gain':
+                context['gain_protocol_version'] = GAIN_PROTOCOL_VERSION
         context['execution_policy'] = {'max_targeted_units': min(18, limits['max_read_units']),
                                        'finalization_reserve_seconds': min(60, limits['timeout_seconds'] * .2),
                                        'video_poll_max_calls': 10, 'video_poll_timeout_seconds': 180}
-        (folder / 'context.json').write_text(json.dumps(context, ensure_ascii=False), encoding='utf-8')
+        write_record(folder / 'context.json', context)
         ReadBudget(folder / 'budget.db', limits['max_read_units'],
                    limits['exploration_budget_ratio'], limits['timeout_seconds'], context['execution_policy'])
         from reading_protocol import generate
@@ -138,6 +180,12 @@ class ResearchTrace:
             raise
         self.complete(path, response, time.monotonic()-started)
         return self.delivery(path, response)
+
+    def evidence_reference(self, path):
+        """Locate an executed read using the executor's own task and read IDs."""
+        record = json.loads(path.read_text(encoding='utf-8'))
+        return {'kind':'research_task','task_id':path.parent.name,
+                'path':str(path.parent/'report.json'),'read_id':record['read_id'],'read_path':str(path)}
 
     def delivery(self, path, response):
         """Persist the same bounded result and budget receipt sent to the caller."""

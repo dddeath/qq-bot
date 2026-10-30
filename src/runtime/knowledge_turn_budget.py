@@ -39,7 +39,7 @@ class TurnBudget:
                         remaining=maximum-used, unit='estimated_tokens',
                         reason=None if accepted else 'turn_changed' if current != turn else 'turn_disclosure_budget_exhausted')
 
-    def deliver(self, turn, tool, arguments, response, elapsed, projector=None):
+    def deliver(self, turn, tool, arguments, response, elapsed, projector=None, application_call_id=None):
         """Keep raw evidence and the exact projected result separately."""
         delivered = deepcopy(response)
         result = delivered.get('result', {})
@@ -59,6 +59,8 @@ class TurnBudget:
         record = dict(turn_id=turn, tool=tool, arguments=arguments, upstream=response,
                       delivered=delivered, elapsed_seconds=elapsed, recorded_at=time.time(),
                       budget=receipt, estimated_cost=cost)
+        if application_call_id is not None:
+            record['application_call_id'] = application_call_id
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute('INSERT INTO deliveries(turn,body) VALUES (?,?)',
                        (turn, json.dumps(record, ensure_ascii=False)))

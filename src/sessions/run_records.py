@@ -28,17 +28,42 @@ def receipt(session, run_id, *, status='running', started_at=None, finished_at=N
 
 
 def from_turn(session, turn):
-    return receipt(session, turn['request_id'], status=turn.get('status'),
+    value = receipt(session, turn['request_id'], status=turn.get('status'),
                    started_at=turn.get('started_at'), finished_at=turn.get('finished_at'),
                    native_session_id=turn.get('native_session_id'),
                    result={k: turn[k] for k in ('response', 'exit_code', 'continuation') if k in turn},
                    error=turn.get('error'), evidence=turn.get('evidence'))
+    if 'configuration' in turn:
+        value['configuration']=turn['configuration']
+    for key in ('input_message_ids','usage'):
+        if key in turn:value[key]=turn[key]
+    return value
 
 
 def save(path, value):
     temp = path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
     temp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
-    temp.replace(path)
+    replace_file(temp,path)
+
+
+def replace_file(source,target):
+    # Windows readers briefly deny replace; POSIX replacements remain one operation.
+    for attempt in range(10):
+        try:
+            os.replace(source,target)
+            return
+        except PermissionError:
+            if os.name!='nt' or attempt==9:raise
+            time.sleep(.01)
+
+
+def load(path):
+    for attempt in range(10):
+        try:
+            return json.loads(Path(path).read_text(encoding='utf-8'))
+        except PermissionError:
+            if os.name!='nt' or attempt==9:raise
+            time.sleep(.01)
 
 
 @contextmanager
