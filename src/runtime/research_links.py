@@ -94,13 +94,13 @@ class ReportLinks:
             if tool['name'] == 'plan_chat_reply':
                 tool['inputSchema'].setdefault('properties', {})['research_reports'] = {
                     'type': 'array', 'items': {'type': 'object', 'properties': {
-                        'report_id': {'type': 'string'}, 'version': {'type': 'string'}},
+                        'report_id': {'type': 'string', 'description': 'report_ref.report_id from a delivered background result.'}, 'version': {'type': 'string', 'description': 'Exact report_ref.version content hash from the delivered background result.'}},
                         'required': ['report_id', 'version'], 'additionalProperties': False}}
                 tool['description'] = tool.get('description', '') + ' 回答检索结果时，在 research_reports 中填写本次实际采用的后台结果 report_ref；普通聊天可省略。'
         tools.append({'name':'read_research_report',
             'description':'按 report_page.next 展开当前会话的后台报告，每次最多800估算token；保留report_ref用于回复关联。offset为字符位置，使用返回的next参数继续。',
-            'inputSchema':{'type':'object','properties':{'report_id':{'type':'string'},
-                'version':{'type':'string'},'offset':{'type':'integer','minimum':0,'default':0}},
+            'inputSchema':{'type':'object','properties':{'report_id':{'type':'string', 'description': 'report_ref.report_id from a delivered background result.'},
+                'version':{'type':'string', 'description': 'Exact report_ref.version content hash from the delivered background result.'},'offset':{'type':'integer','minimum':0,'default':0, 'description': 'Zero-based character offset; follow the returned continuation.'}},
                 'required':['report_id','version'],'additionalProperties':False},
             'annotations':{'readOnlyHint':True}})
         return tools

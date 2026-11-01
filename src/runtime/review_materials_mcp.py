@@ -27,14 +27,14 @@ async def main(directory, deadline=None):
     from mcp.server.stdio import stdio_server
     from mcp.types import Tool,TextContent,ImageContent,CallToolResult
     materials=ReviewMaterials(directory);app=Server('review-materials')
-    page={'offset':{'type':'integer','minimum':0,'default':0},'limit':{'type':'integer','minimum':1,'maximum':6000,'default':6000}}
+    page={'offset':{'type':'integer','minimum':0,'default':0, 'description': 'Zero-based entry offset for directory/outline pages; character offset when reading text or JSON.'},'limit':{'type':'integer','minimum':1,'maximum':6000,'default':6000, 'description': 'Integer 1–6000; default 6000. Text/JSON pages return at most this many characters. Object/array outlines return at most 20 entries even with a larger limit. Continue at the returned next_offset.'}}
     descriptions=[
         ('list_review_materials','List the bound review evidence directory or a section. Start without section; then expand original/reads or extension/reads. No network read budget is spent.',
-         {'section':{'type':['string','null']},'offset':page['offset'],'limit':{'type':'integer','minimum':1,'maximum':20,'default':8}},[]),
-        ('read_review_material','Read one material. Default outline returns field pointers; /result/text reads recorded text, /result/structured_content reads structured output. format=json pages the selected value. Follow next_offset to retain complete evidence; it is not an omission. offset uses entries for outlines, characters for text. Images are listed in the outline.',
-         {'material_id':{'type':'string'},'pointer':{'type':'string','default':''},**page,'format':{'type':'string','enum':['outline','json'],'default':'outline'}},['material_id']),
+         {'section':{'type':['string','null'], 'description': 'Directory section returned by list_review_materials; omit to read the root directory.'},'offset':dict(page['offset'],description='Zero-based material directory entry offset; follow next_offset.'),'limit':{'type':'integer','minimum':1,'maximum':20,'default':8, 'description': 'Maximum directory entries on this page, 1–20.'}},[]),
+        ('read_review_material','Read one material. Default outline returns field pointers; /result/text reads recorded text, /result/structured_content reads structured output. format=json pages the selected value. limit is 1–6000 (default 6000); object/array outlines contain at most 20 entries. Follow next_offset to retain complete evidence. offset uses entries for outlines, characters for text. Images are listed in the outline.',
+         {'material_id':{'type':'string', 'description': 'Material ID from list_review_materials; not an arbitrary filesystem path.'},'pointer':{'type':'string','default':'', 'description': 'JSON Pointer returned in the outline, such as /result/text. Empty selects the root.'},**page,'format':{'type':'string','enum':['outline','json'],'default':'outline', 'description': 'outline lists field pointers; json expands the selected value in bounded pages.'}},['material_id']),
         ('read_review_image','Read actual pixels from an image ID listed by read_review_material. Missing images are reported; paths outside the bound evidence are not accepted.',
-         {'image_id':{'type':'string'}},['image_id'])]
+         {'image_id':{'type':'string', 'description': 'Opaque image ID returned by the material outline; read_review_image returns its pixels.'}},['image_id'])]
     @app.list_tools()
     async def list_tools():
         return [Tool(name=name,description=desc,inputSchema={'type':'object','properties':props,'required':required,'additionalProperties':False}) for name,desc,props,required in descriptions]

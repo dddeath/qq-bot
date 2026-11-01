@@ -7,6 +7,8 @@
   },
   "dependencies": {
     "@xzxzzx/bilibili-mcp": "1.14.2",
-    "fast-xml-parser": "5.11.2"
+    "fast-xml-parser": "5.11.2",
+    "rsshub": "1.0.0-master.1d73c7c",
+    "cheerio": "1.2.0"
   }
 }

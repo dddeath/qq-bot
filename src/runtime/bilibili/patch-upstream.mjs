@@ -29,12 +29,13 @@ const changes={
    ['Accept: "application/json",\n                        ...additionalHeaders,','Accept: "application/json",\n                        ...credentialManager.getAuthHeaders(),\n                        ...additionalHeaders,'],
  ],
 };
+changes["dist/bilibili/creator-content.js"].push(...[["const summary = opus && isRecord(opus.summary) ? opus.summary : undefined;\n    const images = collectDynamicImages(moduleDynamic);", "const summary = opus && isRecord(opus.summary) ? opus.summary : undefined;\n    const article = major && isRecord(major.article) ? major.article : undefined;\n    const images = collectDynamicImages(moduleDynamic);"], ["const type = majorType === \"MAJOR_TYPE_ARCHIVE\"", "const type = upstreamType === \"DYNAMIC_TYPE_ARTICLE\" ? \"article\" : majorType === \"MAJOR_TYPE_ARCHIVE\""], ["upstream_type: upstreamType,\n        text:", "upstream_type: upstreamType,\n        title: boundedRemoteText(article?.title || opus?.title, MAX_DYNAMIC_TEXT_BYTES),\n        coverage: \"directory_summary\",\n        text:"], ["boundedRemoteText(summary?.text, MAX_DYNAMIC_TEXT_BYTES),", "boundedRemoteText(summary?.text, MAX_DYNAMIC_TEXT_BYTES) ||\n            boundedRemoteText(article?.desc, MAX_DYNAMIC_TEXT_BYTES),"]]);
 const pending=[];
 for(const [path,replacements] of Object.entries(changes)) {
  const original=await readFile(join(base,path),'utf8');let modified=original;
  for(const [before,after] of replacements) {
    if(modified.includes(after)) continue;
-   if(modified.split(before).length!==2) throw new Error(`Unexpected upstream content: ${path}`);
+   if(modified.split(before).length!==2) throw new Error(`Unexpected upstream content: ${path} / ${JSON.stringify(before)} / count=${modified.split(before).length-1}`);
    modified=modified.replace(before,after);
  }
  if(modified!==original) pending.push({path,original,modified});
@@ -48,3 +49,4 @@ for(const x of pending){await writeFile(join(run,x.path.replaceAll('/','__')),x.
 await writeFile(join(run,'manifest.json'),JSON.stringify({base,files:pending.map(x=>x.path)},null,2));
 for(const x of pending){await writeFile(join(base,x.path),x.modified);if(await readFile(join(base,x.path),'utf8')!==x.modified)throw new Error('write verification failed');}
 console.log(JSON.stringify({patched:pending.map(x=>x.path),backup:run}));
+

@@ -1,11 +1,55 @@
+import {checkArguments,argumentError} from './argument-errors.mjs';
 import {inflateRawSync} from 'node:zlib';
 import {XMLParser,XMLValidator} from 'fast-xml-parser';
 import {fetchWithoutWBI,throttledFetch} from '@xzxzzx/bilibili-mcp/dist/bilibili/http.js';
 import {credentialManager} from '@xzxzzx/bilibili-mcp/dist/utils/credentials.js';
 import {config} from '@xzxzzx/bilibili-mcp/dist/config.js';
 
-export const danmakuSchema={name:'get_video_danmaku',description:'Read a bounded sample from the current Bilibili danmaku pool, tied to BV, part and video timestamps. Not all historical danmaku. Audience comments are interpretation, not subtitles. No ASR.',annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:true},inputSchema:{type:'object',properties:{bvid_or_url:{type:'string'},page:{type:'integer',minimum:1},limit:{type:'integer',minimum:1,maximum:200,default:80},start_seconds:{type:'number',minimum:0},end_seconds:{type:'number',minimum:0}},required:['bvid_or_url'],additionalProperties:false}};
-const fail=code=>Object.assign(new Error(code),{code});
+export const danmakuSchema={
+  "name": "get_video_danmaku",
+  "description": "Read a bounded sample from the current Bilibili danmaku pool, tied to BV, part and video timestamps. Not all historical danmaku. Audience comments are interpretation, not subtitles. No ASR.",
+  "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "openWorldHint": true
+  },
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "bvid_or_url": {
+        "type": "string",
+        "description": "BV identifier or full/short Bilibili video URL. A URL-selected part is retained; an explicit page must match that part."
+      },
+      "page": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "1-based video part (P). Omit to retain the part selected by the URL; plain BV defaults to P1."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+        "default": 80,
+        "description": "Maximum danmaku items, 1–200; output includes timestamps and coverage."
+      },
+      "start_seconds": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Inclusive start of the time filter, in absolute seconds within the selected video part."
+      },
+      "end_seconds": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Inclusive end of the time filter in the selected part; must be at least start_seconds."
+      }
+    },
+    "required": [
+      "bvid_or_url"
+    ],
+    "additionalProperties": false
+  }
+};
+const fail=argumentError;
 const MAX_WIRE=2*1024*1024,MAX_XML=8*1024*1024;
 async function readPool(cid){
  return throttledFetch(async controller=>{
@@ -29,7 +73,10 @@ async function readPool(cid){
 }
 export async function readDanmaku(args){
  const limit=args.limit??80,start=args.start_seconds??0,end=args.end_seconds??Infinity;
- if(!Number.isInteger(limit)||limit<1||limit>200||!Number.isFinite(start)||start<0||!(end===Infinity||Number.isFinite(end))||end<start)throw fail('INVALID_DANMAKU_ARGUMENT');
+ checkArguments('INVALID_DANMAKU_ARGUMENT',[
+ ['limit',Number.isInteger(limit)&&limit>=1&&limit<=200,'Expected integer 1–200; default 80.'],
+ ['start_seconds',Number.isFinite(start)&&start>=0,'Expected nonnegative finite seconds.'],
+ ['end_seconds',(end===Infinity||Number.isFinite(end))&&end>=start,'Expected seconds >= start_seconds; omit for the full remaining range.']]);
  const value=String(args.bvid_or_url??'');let bvid=value,page=args.page??1;
  if(!/^BV[\da-zA-Z]{10}$/.test(value)){
   let u;try{u=new URL(value);}catch{throw fail('INVALID_BILIBILI_VIDEO');}

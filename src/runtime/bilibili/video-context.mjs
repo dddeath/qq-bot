@@ -1,4 +1,60 @@
-export const videoContextSchema={name:'get_video_context',description:'Collect video description, native subtitles, bounded comments and timestamped danmaku for a background video task. Missing sources remain explicit. comment_limit: integer 1–50 (default 10); danmaku_limit: integer 1–200 (default 80). Zero is invalid; omit for defaults. page is a positive integer. start_seconds/end_seconds are nonnegative absolute seconds with end >= start. Visual reading uses watch_video, sample_video_frames, then get_frames. Audience comments are not author statements or subtitles.',annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:true},inputSchema:{type:'object',properties:{structured_comments:{type:'boolean',default:false},bvid_or_url:{type:'string'},page:{type:'integer',minimum:1},comment_limit:{type:'integer',minimum:1,maximum:50,default:10},danmaku_limit:{type:'integer',minimum:1,maximum:200,default:80},start_seconds:{type:'number',minimum:0},end_seconds:{type:'number',minimum:0}},required:['bvid_or_url'],additionalProperties:false}};
+import {checkArguments} from './argument-errors.mjs';
+export const videoContextSchema={
+  "name": "get_video_context",
+  "description": "Collect video description, native subtitles, bounded comments and timestamped danmaku for a background video task. Missing sources remain explicit. comment_limit: integer 1–50 (default 10); danmaku_limit: integer 1–200 (default 80). Zero is invalid; omit for defaults. page is a positive integer. start_seconds/end_seconds are nonnegative absolute seconds with end >= start. Visual reading uses watch_video, sample_video_frames, then get_frames. Audience comments are not author statements or subtitles.",
+  "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "openWorldHint": true
+  },
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "structured_comments": {
+        "type": "boolean",
+        "default": false,
+        "description": "Return root/reply structure when true, capped at 20 roots. Preserve the returned page_size for continuation."
+      },
+      "bvid_or_url": {
+        "type": "string",
+        "description": "BV identifier or full/short Bilibili video URL. A URL-selected part is retained; an explicit page must match that part."
+      },
+      "page": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "1-based video part (P). Omit to retain the part selected by the URL; plain BV defaults to P1."
+      },
+      "comment_limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50,
+        "default": 10,
+        "description": "Maximum comments, 1–50 in flat mode. structured_comments caps the root page at 20; continue with its returned page_size and next_page."
+      },
+      "danmaku_limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+        "default": 80,
+        "description": "Maximum timestamped danmaku items to request, 1–200."
+      },
+      "start_seconds": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Inclusive start of the time filter, in absolute seconds within the selected video part."
+      },
+      "end_seconds": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Inclusive end of the time filter in the selected part; must be at least start_seconds."
+      }
+    },
+    "required": [
+      "bvid_or_url"
+    ],
+    "additionalProperties": false
+  }
+};
 
 
 
@@ -28,15 +84,12 @@ export async function collectVideoContext(args,call){
 
  const comments=args.comment_limit??10,danmaku=args.danmaku_limit??80;
 
- if(!Number.isInteger(comments)||comments<1||comments>50)throw invalid('comment_limit must be an integer in 1–50; default 10; zero is invalid');
-
- if(!Number.isInteger(danmaku)||danmaku<1||danmaku>200)throw invalid('danmaku_limit must be an integer in 1–200; default 80; zero is invalid');
-
- if(!bvid||!Number.isInteger(page)||page<1||!Number.isInteger(comments)||comments<1||comments>50||!Number.isInteger(danmaku)||danmaku<1||danmaku>200)throw invalid();
-
- for(const k of ['start_seconds','end_seconds'])if(args[k]!==undefined&&(!Number.isFinite(args[k])||args[k]<0))throw invalid();
-
- if(args.end_seconds!==undefined&&args.end_seconds<(args.start_seconds??0))throw invalid();
+ checkArguments('INVALID_VIDEO_CONTEXT_ARGUMENT',[
+ ['bvid_or_url',!!bvid,'Expected BV or Bilibili video URL.'],['page',Number.isInteger(page)&&page>=1,'Expected positive integer video part.'],
+ ['comment_limit',Number.isInteger(comments)&&comments>=1&&comments<=50,'Expected integer 1–50; zero is invalid.'],
+ ['danmaku_limit',Number.isInteger(danmaku)&&danmaku>=1&&danmaku<=200,'Expected integer 1–200; zero is invalid.'],
+ ...['start_seconds','end_seconds'].map(k=>[k,args[k]===undefined||(Number.isFinite(args[k])&&args[k]>=0),'Expected nonnegative finite seconds.']),
+ ['end_seconds',args.end_seconds===undefined||args.end_seconds>=(args.start_seconds??0),'Expected end_seconds >= start_seconds.']]);
 
  const url=`https://www.bilibili.com/video/${bvid}/?p=${page}`;
 

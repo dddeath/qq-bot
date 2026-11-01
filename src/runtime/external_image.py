@@ -1,4 +1,6 @@
 """Bounded public HTTP image reads; no cookies, proxy, or local-file access."""
+from typing import Annotated
+from pydantic import Field
 import base64
 import http.client
 import io
@@ -157,7 +159,7 @@ def create_app():
 
     @app.tool(name='read_external_image', annotations=ToolAnnotations(
         readOnlyHint=True, destructiveHint=False, openWorldHint=True))
-    def read(url: str) -> list:
+    def read(url: Annotated[str, Field(description='Public HTTP(S) image URL, not a web page URL or local path. Returns actual image pixels plus metadata.')]) -> list:
         """读取公开 HTTP(S) 图片直链并返回真实图片内容、最终地址、格式和尺寸。
         外部网页图片用此工具；群消息图片用 read_chat_image(session_id,event_id,index)。
         输入图片 URL，不是网页正文地址。最多16MiB、2500万像素、3次重定向，网络读取20秒；

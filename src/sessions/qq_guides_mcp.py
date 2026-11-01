@@ -19,7 +19,7 @@ def handle(snapshot, request, *, host_wait=False):
             return dict(jsonrpc='2.0', id=request.get('id'), result={'tools': []})
         result = {'tools': [{'name': 'read_qq_tool_guide',
             'description': '按需读取当前 Bot 和群已启用 QQ 能力的操作细则；使用当前会话固定配置版本。',
-            'inputSchema': {'type': 'object', 'properties': {'capability': {'type': 'string', 'enum': list(capabilities)},
+            'inputSchema': {'type': 'object', 'properties': {'capability': {'type': 'string', 'enum': list(capabilities), 'description': 'Enabled QQ capability key from this tool enum; guides use the Session-bound version.'},
                             'section': {'type': 'string', 'description': '留空读取能力说明；子章节名称由能力说明返回。'}},
                             'required': ['capability'], 'additionalProperties': False},
             'annotations': {'readOnlyHint': True}}]}

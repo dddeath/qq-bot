@@ -6,8 +6,10 @@ import json
 HOST_WAIT = '本批处理完后结束当前轮次，由宿主等待并交付下一批消息或后台结果。'
 GUIDES = Path(__file__).resolve().parents[2] / 'prompts/qq-tools/host'
 CHAT_TOOLS = {'start_chat_session', 'get_chat_session', 'plan_chat_reply', 'send_chat_reply',
-              'select_chat_expressions', 'send_chat_message', 'send_chat_sticker'}
+              'select_chat_expressions', 'send_chat_message', 'send_chat_sticker', 'react_to_chat_message',
+              'claim_chat_learning', 'submit_chat_learning', 'get_chat_learning'}
 DESCRIPTIONS = {
+ 'claim_chat_learning': '已启用旧版实时学习时，按宿主交付的 learning_ready 领取一个阶段。用独立模型调用完成后 submit_chat_learning，随后交回宿主；保留真实 invocation_id、lease 与逐字证据。',
  'start_chat_session': '在当前授权账号和群开启或接续聊天。先 list_chat_personas 查询人格 id；新会话保存人格快照，同群同人格接续。消息和游标由宿主管理，学习按独立配置执行。',
  'plan_chat_reply': '根据宿主交付或 get_chat_session 返回的 input_batch.id，选择 wait、silence 或 reply、回应对象与表达通道。只提交简短沟通意图。READY 沿 next_call 完成表达选择和发送；等待或沉默交回宿主。',
  'read_chat_image': '读取当前聊天事件图片的真实像素；动图最多3帧。event_id 使用宿主交付或 get_chat_session 中消息的 id，index 使用 image_index。看图后再描述。',
@@ -61,7 +63,7 @@ def project_body(body, *, event=None, has_more=False):
             hints[3] = '还有未读消息，宿主继续交付；依据完整材料决定回应。'
         elif notices.get('new_items'):
             hints[3] = '读取 reaction_notices.new_items 的原消息和操作者，结合语境决定回应或沉默；不重复回应旧通知和自己的回声。处理完交回宿主。'
-    for key in ('chat_guidance', 'chat_prompt', 'recovery', 'input_batch'):
+    for key in ('chat_guidance', 'chat_prompt', 'recovery', 'input_batch', 'chat_turn'):
         if isinstance(out.get(key), dict):
             out[key] = project_body(out[key], event=event, has_more=has_more)
     if isinstance(out.get('recent_turns'), list):
@@ -73,12 +75,28 @@ def project_body(body, *, event=None, has_more=False):
     return out
 
 
+def project_learning_body(body):
+    """Only the learning service's top-level continuation is control data."""
+    out = deepcopy(body)
+    call = out.get('next_call') if isinstance(out, dict) else None
+    if isinstance(call, dict) and call.get('tool') == 'wait_chat_messages':
+        out.pop('next_call')
+        out.pop('continue_waiting', None)
+        out['control'] = dict(version=1, owner='host', action='yield', state=out.get('state', out.get('status')))
+        out['next'] = HOST_WAIT
+        if 'note' in out:
+            out['note'] = HOST_WAIT
+    return out
+
+
 def project_host_response(response, request):
     out = deepcopy(response)
     result = out.get('result')
     if not isinstance(result, dict):
         return out
-    if request.get('method') == 'tools/list':
+    if request.get('method') == 'initialize' and result.get('serverInfo', {}).get('name') == 'tulpa' and 'instructions' in result:
+        result['instructions'] = guide_text('server')
+    elif request.get('method') == 'tools/list':
         result['tools'] = [t for t in result.get('tools', []) if t.get('name') != 'wait_chat_messages']
         for tool in result['tools']:
             if tool.get('name') in DESCRIPTIONS:
@@ -88,9 +106,10 @@ def project_host_response(response, request):
                 if isinstance(prop, dict):
                     prop['description'] = '宿主交付或 get_chat_session.context 中消息的 id；仅选择回应目标，quote 决定是否显示引用。'
     elif request.get('method') == 'tools/call' and request.get('params', {}).get('name') in CHAT_TOOLS:
+        project = project_learning_body if request['params']['name'] in {'claim_chat_learning', 'submit_chat_learning', 'get_chat_learning'} else project_body
         for key in ('structuredContent', 'structured_content'):
             if isinstance(result.get(key), dict):
-                result[key] = project_body(result[key])
+                result[key] = project(result[key])
         for block in result.get('content', []):
             if block.get('type') != 'text':
                 continue
@@ -99,5 +118,5 @@ def project_host_response(response, request):
             except (ValueError, KeyError):
                 continue
             if isinstance(body, dict):
-                block['text'] = json.dumps(project_body(body), ensure_ascii=False)
+                block['text'] = json.dumps(project(body), ensure_ascii=False)
     return out

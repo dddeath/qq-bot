@@ -1,4 +1,6 @@
 """Read-only MCP access to the versioned game knowledge release."""
+from typing import Annotated
+from pydantic import Field
 import os
 import re
 from pathlib import Path
@@ -62,12 +64,12 @@ def main():
     annotations = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 
     @app.tool(annotations=annotations)
-    def search_local_knowledge(query: str, domain: str = '', limit: int = 5) -> dict:
+    def search_local_knowledge(query: Annotated[str, Field(description='Literal keywords or names for this search. Space-separated terms are supported.')], domain: Annotated[str, Field(description='Domain key from the knowledge index; empty searches all visible domains.')] = '', limit: Annotated[int, Field(description='Maximum documents, bounded to 1–10.')] = 5) -> dict:
         """Search local knowledge and current-group profiles by name, QQ, UID or topic. Domains: apex-legends, arknights, mental-omega, project-moon, ai-personification, group-memory. Empty domain also searches the creator directory."""
         return kb.search(query, domain, limit)
 
     @app.tool(annotations=annotations)
-    def read_local_knowledge(path: str = 'INDEX.md') -> dict:
+    def read_local_knowledge(path: Annotated[str, Field(description='Indexed relative document path, such as INDEX.md or a path returned by search_local_knowledge.')] = 'INDEX.md') -> dict:
         """Read knowledge or a current-group member profile by an indexed path. INDEX.md lists topics; creators.md lists fixed UP accounts. Configuration, credentials and learning databases are separate."""
         return kb.read(path)
 

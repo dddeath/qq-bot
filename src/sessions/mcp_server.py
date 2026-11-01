@@ -4,15 +4,15 @@ from sessions import Sessions
 from harnesses import Harnesses
 import control_mcp
 def tools():
- fields={k:{'type':'string'} for k in ('harness','account_id','group_id','model','effort','native_session_id')};fields['harness']['enum']=['codex','antigravity']
- fields.update(purpose={'type':'string','enum':['chat','learning','research']},bot_ref={'type':'object'})
+ fields={'harness': {'type': 'string', 'description': 'Execution harness to use: codex or antigravity.'}, 'account_id': {'type': 'string', 'description': 'QQ login account ID as a decimal string.'}, 'group_id': {'type': 'string', 'description': 'QQ group ID as a decimal string.'}, 'model': {'type': 'string', 'description': 'Model identifier accepted by the configured harness.'}, 'effort': {'type': 'string', 'description': 'Reasoning effort accepted by the chosen model/harness.'}, 'native_session_id': {'type': 'string', 'description': 'Existing native harness thread/session ID; preserve it to resume that model context.'}};fields['harness']['enum']=['codex','antigravity']
+ fields.update(purpose={'type':'string','enum':['chat','learning','research','screening'],'description':'Session role: chat, learning, research or screening.'},bot_ref={'type':'object','description':'Fixed Bot reference {kind:"bot", id, version}; obtain from configuration_get.'})
  return [dict(name=n,description=d,inputSchema={'type':'object','properties':p,'required':r,'additionalProperties':False},annotations={'readOnlyHint':n in ('session_list','session_get','session_history')}) for n,d,p,r in [
  ('session_list','List registered sessions for either harness.',{},[]),
  ('session_create','Register a session; an existing native ID preserves its context.',fields,['harness','model','effort']),
- ('session_adopt','Attach an existing live chat runner without starting or stopping it.',dict(fields,run_path={'type':'string'},tulpa_session_id={'type':'string'}),['harness','account_id','group_id','model','effort','native_session_id','run_path','tulpa_session_id']),
- ('session_get','Read session status.',{'session_id':{'type':'string'}},['session_id']),
- ('session_history','Read messages, native events, errors and timings.',{'session_id':{'type':'string'}},['session_id']),
- ('session_send','Send one message or resume the stored native thread. Repeated request_id is not executed again.',{k:{'type':'string'} for k in ('session_id','prompt','request_id')},['session_id','prompt','request_id'])]] + control_mcp.tools()
+ ('session_adopt','Attach an existing live chat runner without starting or stopping it.',dict(fields,run_path={'type':'string', 'description': 'Absolute runtime Run directory on the executing host; not the registry Session ID.'},tulpa_session_id={'type':'string', 'description': 'Tulpa chat session_id bound to this runner; distinct from the unified and native session IDs.'}),['harness','account_id','group_id','model','effort','native_session_id','run_path','tulpa_session_id']),
+ ('session_get','Read session status.',{'session_id':{'type':'string', 'description': 'Unified registry Session ID, not a native model thread or Tulpa chat ID.'}},['session_id']),
+ ('session_history','Read messages, native events, errors and timings.',{'session_id':{'type':'string', 'description': 'Unified registry Session ID, not a native model thread or Tulpa chat ID.'}},['session_id']),
+ ('session_send','Send one message or resume the stored native thread. Repeated request_id is not executed again.',{'session_id': {'type': 'string', 'description': 'Unified registry Session ID, not a native model thread or Tulpa chat ID.'}, 'prompt': {'type': 'string', 'description': 'Text to deliver to this native model session.'}, 'request_id': {'type': 'string', 'description': 'Stable request identifier for one operation; reuse unchanged arguments after an uncertain response.'}},['session_id','prompt','request_id'])]] + control_mcp.tools()
 def main():
  p=argparse.ArgumentParser();p.add_argument('--config',required=True);a=p.parse_args();c=json.load(open(a.config,encoding='utf-8-sig'));execute=Harnesses(c['harnesses'],c['evidence'])
  with Sessions(c['database']) as api:
@@ -28,11 +28,15 @@ def main():
      n=req['params']['name'];args=req['params'].get('arguments',{})
      schema=next((t['inputSchema'] for t in tools() if t['name']==n),None)
      if schema is None:raise ValueError('unknown tool')
-     if set(args)-set(schema['properties']) or set(schema['required'])-set(args):raise ValueError('invalid arguments')
-     control_mcp.validate(schema,args)
      methods={'session_list':api.list,'session_create':api.create,'session_adopt':api.adopt,'session_get':api.get,'session_history':api.history}
      try:
-      if n.startswith('configuration_') or n in ('bot_inherit','session_bind','session_effective_configuration','session_runs','session_export_tools','session_publish_runtime','session_rollback_publication'):value=control_mcp.call(api,n,args)
+      control_mcp.validate(schema,args)
+      if n in {tool['name'] for tool in control_mcp.tools()}:
+       adapter=None
+       if n=='runtime_application_execute' and c.get('runtime_reload'):
+        from application_worker import CommandReloader
+        adapter=CommandReloader(c['runtime_reload'])
+       value=control_mcp.call(api,n,args,reload_consumer=adapter)
       else:value=api.send(**args,execute=execute) if n=='session_send' else methods[n](**args)
       result={'content':[{'type':'text','text':json.dumps(value,ensure_ascii=False)}]}
      except Exception as exc:result={'isError':True,'content':[{'type':'text','text':str(exc)}]}
@@ -40,4 +44,4 @@ def main():
     response={'jsonrpc':'2.0','id':rid,'result':result}
    except Exception as exc:response={'jsonrpc':'2.0','id':req.get('id'),'error':{'code':-32602,'message':str(exc)}}
    print(json.dumps(response,ensure_ascii=False),flush=True)
-if __name__=='__main__':main()
+if __name__=='__main__':main()
