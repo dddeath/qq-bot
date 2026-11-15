@@ -17,14 +17,32 @@ def now():
 
 
 class EntryStore:
-    def __init__(self, path, collections):
+    def __init__(self, path, collections, documents=None):
         self.path = Path(path)
         self.collections = frozenset(collections)
+        self.documents = documents or {}
+
+    @classmethod
+    def for_reader(cls, path, account, group, knowledge_root=None):
+        """Open the host-granted read collections; maintenance uses explicit grants."""
+        if not Path(path).is_file():
+            raise ValueError('knowledge_entry_store_missing')
+        collections = ['formal']
+        if str(account).isdigit() and str(group).isdigit():
+            collections.extend((f'learning:{account}:{group}', f'profile:{account}:{group}'))
+        manifest = Path(knowledge_root) / 'catalog.json' if knowledge_root else None
+        documents = json.loads(manifest.read_text(encoding='utf-8-sig'))['documents'] if manifest and manifest.is_file() else {}
+        return cls(path, collections, documents)
 
     def _load(self):
         if not self.path.exists():
             return dict(protocol_version=1, tags={}, entries={}, history={})
         return json.loads(self.path.read_text(encoding='utf-8'))
+
+    def retrieval_view(self):
+        """Current active source revisions in this reader's collection grants."""
+        return {key: entry for key, entry in self._load()['entries'].items()
+                if entry['collection'] in self.collections and entry['status'] == 'active'}
 
     def _write(self, action):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -185,7 +203,10 @@ class EntryStore:
         return dict(protocol_version=1, entries=len(entries), tags=len(used),
                     tag_categories=categories, untagged_entries=sum(not e['tags'] for e in entries))
 
-    def find(self, all_tags, any_tags, limit=6, query=''):
+    def find(self, all_tags, any_tags, limit=6, query='', purpose=None):
+        from knowledge_query import PURPOSES, supports_expression
+        if purpose is not None and purpose not in PURPOSES:
+            raise ValueError('invalid_query_purpose')
         data = self._load()
         self._tags(data, all_tags)
         self._tags(data, any_tags)
@@ -195,10 +216,27 @@ class EntryStore:
                 continue
             if not set(all_tags) <= set(e['tags']) or (any_tags and not set(any_tags) & set(e['tags'])):
                 continue
+            if purpose == 'expression' and not supports_expression(e, self.documents):
+                continue
             if query and query.casefold() not in (e['title'] + '\n' + e['content']).casefold():
                 continue
-            items.append(dict(id=e['id'], title=e['title'], summary=e['content'][:80],
-                              tags=e['tags'], revision=e['revision']))
+            start = 0
+            content = e['content']
+            folded_hit = content.casefold().find(query.casefold()) if query else -1
+            if folded_hit >= 0:
+                # Case folding can expand characters; read offsets refer to the original body.
+                folded_position = 0
+                for position, char in enumerate(content):
+                    folded_position += len(char.casefold())
+                    if folded_position > folded_hit:
+                        line_start = content.rfind('\n', 0, position) + 1
+                        start = line_start if position - line_start < 80 else max(line_start, position - 24)
+                        break
+            from knowledge_retrieval_policy import PAGE_CHARACTERS
+            reference = dict(entry_id=e['id'], revision=e['revision'], offset=start,
+                             limit=max(1, min(PAGE_CHARACTERS, len(content) - start)))
+            items.append(dict(id=e['id'], title=e['title'], summary=content[start:start + 80],
+                              tags=e['tags'], revision=e['revision'], passages=[reference]))
         items.sort(key=lambda x: (x['title'], x['id']))
         return dict(items=items[:max(1, min(limit, 20))], total=len(items))
 

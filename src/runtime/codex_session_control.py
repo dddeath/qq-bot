@@ -1,5 +1,6 @@
 """Serialized Codex App Server session control; no live runner ownership transfer."""
 import time
+from model_input_audit import audit_input
 
 
 class ServerOverloaded(RuntimeError):
@@ -17,6 +18,7 @@ class CodexSession:
 
     def configure(self, instructions, **options):
         params = dict(options, developerInstructions=instructions)
+        self.record(dict(event='model_input_audit', **audit_input(params, surface='thread_configuration')))
         if self.thread_id:
             params['threadId'] = self.thread_id
             params['excludeTurns'] = True
@@ -27,6 +29,7 @@ class CodexSession:
     def run_turn(self, text, *, timeout=180):
         inputs = text if isinstance(text, list) else [{'type': 'text', 'text': text}]
         for attempt in range(4):
+            self.record(dict(event='model_input_audit', **audit_input(inputs, surface='turn_input')))
             result = self.transport.call('turn/start', {'threadId': self.thread_id, 'input': inputs})
             try:
                 return self._finish(result['turn']['id'], False, timeout)

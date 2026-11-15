@@ -5,12 +5,22 @@ import math
 VERSION = 'reading-v8'
 
 def generate(task_id, context):
+    contract=context.get('task_context',{}).get('decision_contract')
+    if contract:
+        from knowledge_decision import VERSION as decision_version, execution_prompt
+        limits=contract['limits']
+        return {'protocol_version':decision_version,'execution_prompt':execution_prompt('pending_decision',{
+            'total_calls':limits['total_calls'],'total_seconds':limits['total_seconds'],
+            'read_seconds':limits['total_seconds']-limits['reserve_seconds'],
+            'probe_calls':limits['max_calls'],'probe_seconds':limits['max_seconds'],
+            'probe_characters':limits['max_characters'],'probe_started':False},
+            {'goal':context['goal'],'query_plan':context.get('task_context',{}).get('query_plan')})}
     budget = context['budget']
     policy = dict(overview_limit=3, max_read_units=budget['max_read_units'],
                   exploration_limit=math.ceil(budget['max_read_units']*budget['exploration_budget_ratio']),
                   exploration_budget_ratio=budget['exploration_budget_ratio'], timeout_seconds=budget['timeout_seconds'])
     policy.update(context.get('execution_policy', {}))
-    from learning_research import OVERVIEW
+    from reading_budget import OVERVIEW
     policy['overview_tools'] = sorted(OVERVIEW)
     policy['counting_rule'] = '概览类工具最先的3次读取使用概览额度；其余资料读取使用总补读额度，并受定向或探索上限约束。watch_video 首次准备和后续查询按每视频单独计次计时，不占补读额度；采样、读图仍计补读。失败调用计数。'
     task = {'task_id':task_id,'task_mode':context['task_mode'],'goal':context['goal'],
@@ -27,7 +37,10 @@ def generate(task_id, context):
 你的报告交给下游提炼知识；工具轨迹单独保存。保留有价值的信息，不以是否值得发布来删去视频内容。'''
     from knowledge_tools import guidance
     application=context.get('knowledge_application')
-    knowledge_guidance = guidance(context.get('knowledge_protocol', 'legacy'),application)
+    knowledge_guidance = guidance(context.get('knowledge_protocol', 'legacy'),application,context.get('knowledge_semantic',False))
+    if context.get('knowledge_semantic'):
+        from knowledge_query import query_guidance
+        knowledge_guidance += '\n'+query_guidance()
     from knowledge_application import policy as application_policy
     selected=application_policy(application)
     preference=selected['enabled'] and selected['strategy']=='gain'
@@ -35,7 +48,7 @@ def generate(task_id, context):
         knowledge_guidance+='\n本任务已通过检索裁决，按目标与预算完成读取，不重复判断是否启动。'
     next_read=('再依据任务目标与具体增益选择补读。' if preference else '再依据缺口选择补读。')
     protocol = '''直接调用已开放的只读检索工具完成本任务，不派生子代理。任务数据如下：
-'''+json.dumps(task,ensure_ascii=False)+'''\n先读取廉价基础概览，'''+next_read+'''
+'''+json.dumps(task,ensure_ascii=False)+'''\n先读取廉价基础概览，'''+next_read+'''按 UP 的 UID 可用 read_rss_subscription 获取近期目录；文章按 get_bilibili_article 的段落分页展开，图片引用不代表已看图。
 '''+knowledge_guidance+''' 
 所有MCP资料读取统一填写 _reading：task_id、purpose(targeted/explore)、reason(本次要查什么)、relation(与目标的关系)，可附 prior_observation。
 定向须与本任务目标高度相关；探索可以旁支，探索转定向时记录与目标的关联依据。

@@ -106,7 +106,7 @@ class ReportLinks:
         return tools
 
     def response(self, response, tool, arguments, refs):
-        from research_feedback import body_of
+        from reading_result import body_of
         result = deepcopy(response)
         body = body_of({'result': result.get('result', {})})
         if not body or result.get('result', {}).get('isError'):

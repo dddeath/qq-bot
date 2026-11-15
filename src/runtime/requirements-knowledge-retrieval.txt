@@ -1,0 +1,5 @@
+# Optional semantic retrieval runtime; MCP dependencies follow the existing host.
+numpy==2.3.4
+onnxruntime==1.23.2
+tokenizers==0.22.1
+jieba==0.42.1

@@ -4,6 +4,7 @@ from contextlib import closing
 import hashlib
 import json
 from knowledge_sampling import VERSION as GAIN_PROTOCOL_VERSION, sample, unit_value
+from knowledge_decision import CONFIG_SCHEMA as PROBE_SCHEMA, settings as probe_settings
 from pathlib import Path
 import sqlite3
 import time
@@ -15,26 +16,34 @@ POLICY_SCHEMA = {'type': 'object', 'properties': {
     'enabled': {'type': 'boolean'},
     'strategy': {'type': 'string', 'enum': ['baseline', 'gain']},
     'gain_inclination': {'type': 'number', 'minimum': 0, 'maximum': 1, 'default': 0.5},
-    'gain_adjustment_limit': {'type': 'number', 'minimum': 0, 'maximum': 1, 'default': 0.15}},
+    'gain_adjustment_limit': {'type': 'number', 'minimum': 0, 'maximum': 1, 'default': 0.15},
+    'decision_probe': PROBE_SCHEMA},
     'additionalProperties': False}
 
 
 def policy(value=None):
     value = {} if value is None else value
-    if (not isinstance(value, dict) or set(value)-{'enabled', 'strategy', 'gain_inclination', 'gain_adjustment_limit'}
+    if (not isinstance(value, dict) or set(value)-{'enabled', 'strategy', 'gain_inclination', 'gain_adjustment_limit','decision_probe'}
             or type(value.get('enabled', False)) is not bool
             or value.get('strategy', 'baseline') not in ('baseline', 'gain')):
         raise ValueError('invalid_knowledge_application_policy')
     inclination = unit_value(value.get('gain_inclination', 0.5), 'gain_inclination')
     limit = unit_value(value.get('gain_adjustment_limit', 0.15), 'gain_adjustment_limit')
-    return {'enabled': value.get('enabled', False), 'strategy': value.get('strategy', 'baseline'),
-            'gain_inclination': inclination, 'gain_adjustment_limit': limit}
+    result = {'enabled': value.get('enabled', False), 'strategy': value.get('strategy', 'baseline'),
+              'gain_inclination': inclination, 'gain_adjustment_limit': limit}
+    if 'decision_probe' in value:
+        if result['strategy']!='gain':raise ValueError('decision_probe_requires_gain_policy')
+        result['decision_probe']=probe_settings(value['decision_probe'])
+    return result
 
 
 def inclination_guidance(value=None):
     selected = policy(value)
     if not selected['enabled'] or selected['strategy'] != 'gain':
         return ''
+    if 'decision_probe' in selected:
+        from knowledge_decision import DECISION_GUIDANCE
+        return DECISION_GUIDANCE
     return ('分两步决定本次知识补齐。第一步：依据当前上下文与具体目标，检查是否有充分、具体的证据'
             '确定直接作答或确定检索。直接作答需有证据表明已有材料覆盖当前需求，并有具体依据确认补读没有增益；'
             '确定检索需有证据指出影响回答的信息缺口或具体补齐收益。'
@@ -50,6 +59,9 @@ def protocol(value=None):
     selected = policy(value)
     if not selected['enabled']:
         return ''
+    if 'decision_probe' in selected:
+        from knowledge_decision import guidance
+        return guidance()
     trigger = ('表达需求或有影响答案的信息缺口时按需检索，已有材料足够时直接生成回应。'
                if selected['strategy'] == 'baseline' else
                '先判断当前交流需要；即使已有答案，若补读某个条件、数值、社区语义或比较依据能产生具体收益，'
@@ -86,20 +98,20 @@ def protocol(value=None):
 
 def envelope_schema():
     return {'type': 'object', 'properties': {
-        'action': {'type': 'string', 'enum': ['reply', 'local_read', 'research']},
+        'action': {'type': 'string', 'enum': ['reply', 'local_read', 'research'], 'description': 'Action declared for this knowledge use: reply, local_read or research.'},
         'trigger': {'type': 'string', 'enum': ['none', 'expression', 'information_gap', 'answer_improvement', 'discussion_deepening'],
             'description': '固定类别：none 无补读需求；expression 表达或社区语义；information_gap 回答所需信息缺口；answer_improvement 已能回答但补读可改善；discussion_deepening 延续当前话题深挖。具体判断依据写 objective、expected_gain。'},
         'target_event_ids': {'type': 'array', 'items': {'type': 'string'}, 'minItems': 1,
             'description': '当前已交付消息的事件 ID 字符串数组，例如 ["1364"]。'},
-        'objective': {'type': 'string'}, 'expected_gain': {'type': 'string'},
-        'focus_ref': {'type': 'null'},
-        'subjective_inclination': {'type':'number','minimum':0,'maximum':1},
-        'phase': {'type':'string','enum':['acknowledgement','final']},
+        'objective': {'type': 'string', 'description': 'Concrete information or expression improvement sought for these messages.'}, 'expected_gain': {'type': 'string', 'description': 'Brief evidence for expected content or expression benefit; include actual material references when read.'},
+        'focus_ref': {'type': 'null', 'description': 'Reserved cross-turn focus reference; currently null.'},
+        'subjective_inclination': {'type':'number','minimum':0,'maximum':1, 'description': 'Final inclination in [0,1]: 0 requires evidence excluding benefit; 1 requires evidence confirming benefit; otherwise an intermediate value.'},
+        'phase': {'type':'string','enum':['acknowledgement','final'], 'description': 'acknowledgement for a research-start notice; final for the completed answer.'},
         'completion': {'type':'object',
             'description': '仅 plan_chat_reply 可选填写的回复收尾说明。阅读任务先用 finish_reading_task 记录停止原因；这里可省略，若填写须为对象，例如 {"stop_reason":"sufficient","reason":"已核对所需材料"}。',
             'properties':{
-            'stop_reason':{'type':'string','enum':['sufficient','no_expected_gain','budget_exhausted','no_readable_material']},
-            'reason':{'type':'string','minLength':1}},'required':['stop_reason','reason'],'additionalProperties':False},
+            'stop_reason':{'type':'string','enum':['sufficient','no_expected_gain','budget_exhausted','no_readable_material'], 'description': 'Reason for stopping, selected from the declared enum; budget exhaustion and incomplete evidence are distinct.'},
+            'reason':{'type':'string','minLength':1, 'description': 'Short factual basis for this action or stopping reason.'}},'required':['stop_reason','reason'],'additionalProperties':False},
         'decision_ids': {'type': 'array', 'items': {'type': 'string'}, 'minItems': 1,
             'description': '沿用宿主返回的决定 ID；本次 _knowledge 仅保留 decision_ids，可加 used_read_ids、phase、completion，省略 action、trigger、target_event_ids、objective、expected_gain、focus_ref 和 subjective_inclination。'},
         'used_read_ids': {'type': 'array', 'items': {'type': 'string'},
@@ -184,8 +196,17 @@ class Application:
         names = ALL_TOOLS | {'begin_reading_task','plan_chat_reply','read_research_report'}
         result = deepcopy(tools)
         for tool in result:
+            if self.gated and 'decision_probe' in self.context['policy'] and tool['name']=='begin_reading_task':
+                from knowledge_decision import begin_schema, TOOL_DESCRIPTION
+                tool['inputSchema']=begin_schema()
+                tool['description']=TOOL_DESCRIPTION
+                continue
             if tool['name'] in names:
                 if self.gated and tool['name'] in ALL_TOOLS:
+                    if 'decision_probe' in self.context['policy']:
+                        from knowledge_decision import LOCAL_READS, read_schema
+                        if tool['name'] in LOCAL_READS:
+                            tool.update(read_schema(tool))
                     continue  # Task reads use _reading; judgment belongs to the two entry tools.
                 envelope = envelope_schema()
                 if self.gated and tool['name']=='read_research_report':
@@ -210,6 +231,11 @@ class Application:
                     tool['description'] += ' target_event_ids '+envelope['properties']['target_event_ids']['description']
                 if tool['name'] == 'plan_chat_reply':
                     tool['description'] += ' completion '+envelope['properties']['completion']['description']
+                    if self.gated and 'decision_probe' in self.context['policy']:
+                        tool['inputSchema']['properties']['_knowledge']={
+                            'type':'object','properties':{k:envelope['properties'][k] for k in ('decision_ids','used_read_ids','phase','completion')},
+                            'required':['decision_ids'],'additionalProperties':False}
+                        tool['description']='规划当前原消息的回复。先通过 begin_reading_task 提交裁决并结束阅读；引用返回的 decision_ids 与已采用的 used_read_ids。phase=acknowledgement 可先告知正在查阅。'
         return result
 
     def verify_snapshot(self, snapshot):
@@ -237,6 +263,11 @@ class Application:
 
     def prepare(self, tool, arguments):
         from knowledge_tools import ALL_TOOLS
+        if self.gated and tool=='begin_reading_task' and ('decision_stage' in arguments or 'decision_probe' in self.context['policy']):
+            from knowledge_decision import prepare_begin
+            return prepare_begin(self,arguments)
+        if self.gated and 'decision_probe' in self.context['policy'] and tool=='plan_chat_reply' and 'decision_ids' not in (arguments.get('_knowledge') or {}):
+            raise ValueError('knowledge_entry_required: begin_reading_task')
         args = deepcopy(arguments)
         meta = args.pop('_knowledge', None)
         if self.gated and tool in ALL_TOOLS and meta is not None:
@@ -353,6 +384,13 @@ class Application:
                 refs=task_refs
             if self.gated:
                 if refs:self._validate_decision_scope(db,refs,turn,tool,args)
+                for ref in refs:
+                    selected=json.loads(db.execute('SELECT body FROM decisions WHERE id=?',(ref,)).fetchone()[0])
+                    if selected.get('decision_protocol'):
+                        if tool=='plan_chat_reply' and not selected.get('decision_id'):
+                            raise ValueError('knowledge_decision_pending: commit before planning reply')
+                        if '_reading' in args and selected.get('gate') and not selected['gate']['retrieve']:
+                            raise ValueError('decision_disallows_new_reads')
                 if tool in ('begin_reading_task','plan_chat_reply') and not refs:
                     raise ValueError('subjective_inclination_required')
                 if task_id and not task_refs:
@@ -380,6 +418,9 @@ class Application:
             if not refs or call[0] not in ('begin_reading_task','plan_chat_reply'):
                 return None
             decisions=[json.loads(db.execute('SELECT body FROM decisions WHERE id=?',(ref,)).fetchone()[0]) for ref in refs]
+            if call[0]=='begin_reading_task' and decisions[0].get('decision_protocol'):
+                from knowledge_decision import intercept_begin
+                return intercept_begin(self,db,call,decisions[0],trace)
             reading=[d for d in decisions if d.get('gate',{}).get('retrieve')]
             if call[0]=='begin_reading_task':
                 if len(decisions)!=1:
@@ -426,7 +467,7 @@ class Application:
 
     def complete(self, token, response, elapsed, evidence_ref=None):
         if token is None: return response
-        from research_feedback import body_of
+        from reading_result import body_of
         result = deepcopy(response)
         body = body_of(result)
         if not isinstance(result.get('result',{}).get('structuredContent'),dict):
@@ -454,16 +495,37 @@ class Application:
             row=db.execute('SELECT turn_id,refs,observation,tool,arguments FROM calls WHERE id=?',(token,)).fetchone()
             if not row: raise ValueError('unknown_application_call')
             if row[2] is not None: raise ValueError('application_call_already_completed')
+            public_refs=[]
+            pending=False
+            closed_without_decision=False
+            for ref in json.loads(row[1]):
+                selected=json.loads(db.execute('SELECT body FROM decisions WHERE id=?',(ref,)).fetchone()[0])
+                if not failed and row[3]=='finish_reading_task' and selected.get('decision_protocol'):
+                    selected['state']='closed'
+                    db.execute('UPDATE decisions SET body=? WHERE id=?',(json.dumps(selected,ensure_ascii=False),ref))
+                if selected.get('decision_protocol') and not selected.get('decision_id'):
+                    if selected['state']=='closed':closed_without_decision=True
+                    else:pending=True
+                else:public_refs.append(ref)
             from knowledge_tools import ALL_TOOLS
-            if not failed and (row[3] in ALL_TOOLS | {'read_research_report'}
+            if not failed and ('material' not in body or body['material'] is not None) and (row[3] in ALL_TOOLS | {'read_research_report'}
                                or '_reading' in json.loads(row[4])['upstream']):
                 observation['read_id']=token
             db.execute('UPDATE calls SET observation=? WHERE id=?',(json.dumps(observation,ensure_ascii=False),token))
         receipt=dict(protocol_version=self.context['protocol_version'],turn_id=row[0],call_id=token,
-            decision_ids=json.loads(row[1]),status=observation['status'],
-            decision_status='recorded' if json.loads(row[1]) else 'decision_not_recorded')
+            decision_ids=public_refs,status=observation['status'],
+            decision_status='pending_decision' if pending else 'recorded' if public_refs else 'closed_without_decision' if closed_without_decision else 'decision_not_recorded')
         if 'read_id' in observation:
             receipt['read_id']=observation['read_id']
+        if 'material' in body and 'coverage' in body and 'task_id' in body:
+            body['read_id']=token
+            for block in result.get('result',{}).get('content',[]):
+                if block.get('type')=='text':
+                    try:candidate=json.loads(block['text'])
+                    except ValueError:continue
+                    if isinstance(candidate,dict) and 'material' in candidate and 'coverage' in candidate:
+                        block['text']=json.dumps(body,ensure_ascii=False)
+                        break
         if isinstance(result.get('result'),dict):
             result['result'].setdefault('content',[]).append({'type':'text','text':json.dumps({'knowledge_application':receipt},ensure_ascii=False)})
             if isinstance(result['result'].get('structuredContent'),dict):

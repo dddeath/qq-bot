@@ -36,21 +36,25 @@ def create_app(catalog):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--retrieval-profile', help='Host-bound semantic index, encoder and optional replay cutoff')
+    options = parser.parse_args()
     entry_store = os.environ.get('QQ_KNOWLEDGE_ENTRY_STORE')
     if entry_store:
-        from pathlib import Path
         from knowledge_entries import EntryStore
         from knowledge_entries_mcp import create_app as create_entry_app
 
-        if not Path(entry_store).is_file():
-            raise ValueError('knowledge_entry_store_missing')
-        account = os.environ.get('QQ_KNOWLEDGE_ACCOUNT', '')
-        group = os.environ.get('QQ_KNOWLEDGE_GROUP', '')
-        collections = ['formal']
-        if account.isdigit() and group.isdigit():
-            collections += [f'learning:{account}:{group}', f'profile:{account}:{group}']
-        create_entry_app(EntryStore(entry_store, collections), read_only=True).run(transport='stdio')
+        store = EntryStore.for_reader(entry_store, os.environ.get('QQ_KNOWLEDGE_ACCOUNT', ''),
+                                      os.environ.get('QQ_KNOWLEDGE_GROUP', ''), os.environ.get('QQ_KNOWLEDGE_ROOT'))
+        retrieval = None
+        if options.retrieval_profile:
+            from knowledge_retrieval import from_profile
+            retrieval = from_profile(store, options.retrieval_profile)
+        create_entry_app(store, read_only=True, retrieval=retrieval).run(transport='stdio')
         return
+    if options.retrieval_profile:
+        raise ValueError('semantic_retrieval_requires_entry_store')
     catalog = KnowledgeCatalog(os.environ['QQ_KNOWLEDGE_ROOT'],
         os.environ.get('QQ_KNOWLEDGE_ACCOUNT', ''), os.environ.get('QQ_KNOWLEDGE_GROUP', ''),
         os.environ.get('QQ_KNOWLEDGE_LEARNING_ROOT'),

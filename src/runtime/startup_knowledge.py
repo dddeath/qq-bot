@@ -1,20 +1,15 @@
 """Render the two knowledge pages supplied on chat startup."""
 from local_knowledge import Knowledge
-from knowledge_tools import provider_mode, guidance
+from knowledge_tools import RetrievalBinding, guidance
 
 
-def render_catalog(root, account, group, learning_root=None, budget=800, entry_store=None, application_policy=None):
+def render_catalog(root, account, group, learning_root=None, budget=800, entry_store=None, application_policy=None, semantic=False):
     """Bounded entry points and brief mapping; body retrieval stays on demand."""
     from knowledge_catalog import KnowledgeCatalog
     if entry_store:
-        from pathlib import Path
         from knowledge_entries import EntryStore
-        if not Path(entry_store).is_file(): raise ValueError('knowledge_entry_store_missing')
-        collections = ['formal']
-        if str(account).isdigit() and str(group).isdigit():
-            collections += [f'learning:{account}:{group}', f'profile:{account}:{group}']
-        index = EntryStore(entry_store, collections).index()
-        prefix = ('## 知识入口\n'+guidance('tags',application_policy)+'\n可读条目：'+str(index['entries'])
+        index = EntryStore.for_reader(entry_store, account, group).index()
+        prefix = ('## 知识入口\n'+guidance('tags',application_policy,semantic)+'\n可读条目：'+str(index['entries'])
                   +'；Tag 数：'+str(index['tags'])+'；未标注条目：'+str(index['untagged_entries'])+'\n')
     else:
         catalog = KnowledgeCatalog(root, account, group, learning_root)
@@ -48,16 +43,17 @@ def render(root,account,group):
 
 def render_servers(servers, binding=None, application_policy=None):
     """Render only the enabled catalog's host-bound index."""
-    catalogs = [server for server in servers.values()
-                if provider_mode(server)]
-    if not catalogs:
+    bound = RetrievalBinding.select(servers, ambiguity='ambiguous_startup_knowledge_provider')
+    return render_binding(bound, binding, application_policy)
+
+
+def render_binding(bound, binding=None, application_policy=None):
+    if bound is None:
         return ''
-    if len(catalogs) != 1:
-        raise ValueError('ambiguous_startup_knowledge_provider')
-    env = catalogs[0].get('env', {})
+    env = bound.server.get('env', {})
     account, group = env.get('QQ_KNOWLEDGE_ACCOUNT', ''), env.get('QQ_KNOWLEDGE_GROUP', '')
     if binding and (account != binding['account_id'] or group != binding['group_id']):
         raise ValueError('startup_knowledge_scope_mismatch')
     return render_catalog(env['QQ_KNOWLEDGE_ROOT'], account, group,
         env.get('QQ_KNOWLEDGE_LEARNING_ROOT'), int(env.get('QQ_KNOWLEDGE_STARTUP_BUDGET', '800')),
-        env.get('QQ_KNOWLEDGE_ENTRY_STORE'), application_policy)
+        env.get('QQ_KNOWLEDGE_ENTRY_STORE'), application_policy, bound.semantic)

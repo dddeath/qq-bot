@@ -8,8 +8,10 @@ def validate_snapshot(snapshot):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'runtime'))
     from knowledge_application import policy
     selected=policy(snapshot.get('knowledge_application'))
+    from knowledge_overview import decision_entry
+    decision_entry(snapshot)
     if selected['enabled'] and selected['strategy']=='gain':
-        from learning_research import ALLOWED
+        from reading_tools import ALLOWED
         for definition in snapshot.get('servers',{}).values():
             trace=definition.get('reading_trace') or {}
             tools=definition.get('tools',[])
@@ -93,6 +95,9 @@ def codex_overrides(path, *, existing_servers=(), conversation=None, host_wait=F
                 if knowledge_budget and '--knowledge-budget' not in config['args']:
                     config['args'] += ['--knowledge-budget', str(knowledge_budget)]
     overrides = {f'mcp_servers.{name}.enabled': False for name in existing_servers}
+    if knowledge_application and 'decision_probe' in policy(snapshot.get('knowledge_application')):
+        # Stage-scoped MCP tools change after commit and finish in the same CLI turn.
+        overrides['features.mcp_tool_list_changed'] = True
     for name, config in servers.items():
         # Fresh namespaces avoid inheriting an old URL, credential or disabled list.
         managed = 'qq-managed-'+name
@@ -101,6 +106,11 @@ def codex_overrides(path, *, existing_servers=(), conversation=None, host_wait=F
             tools = [*tools, 'read_research_report']
         if snapshot['servers'].get(name, {}).get('reading_trace'):
             tools = [*tools, 'begin_reading_task', 'finish_reading_task', 'declare_native_read']
+            if knowledge_application:
+                from knowledge_overview import decision_entry
+                owner = decision_entry(snapshot)
+                if owner and name != owner:
+                    tools = [tool for tool in tools if tool != 'begin_reading_task']
         for key, value in {**config, 'enabled': True, 'enabled_tools': tools,
                            'tool_timeout_sec': 3660 if 'wait_chat_messages' in tools else 245}.items():
             overrides[f'mcp_servers.{managed}.{key}'] = value

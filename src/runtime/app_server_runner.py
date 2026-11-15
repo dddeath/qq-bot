@@ -17,7 +17,6 @@ from context_runner import ChatLoop
 from chat_guidance import GuidanceProjection
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'sessions'))
 from qq_tool_runtime import load_snapshot, startup_prompt, codex_overrides
-from runtime_configuration import chat_policy
 
 
 HOST_WAIT_INSTRUCTIONS = '''
@@ -132,7 +131,6 @@ def read_body(wire):
 
 def run_context_chat(run, thread, *, policy, tulpa_session, conversation, activation_state):
     run = Path(run)
-    policy=chat_policy(policy,conversation)
     home = Path(os.environ['CODEX_HOME'])
     config = tomllib.loads((home/'config.toml').read_text(encoding='utf-8'))
     tulpa = config['mcp_servers']['tulpa']
@@ -174,14 +172,14 @@ def run_context_chat(run, thread, *, policy, tulpa_session, conversation, activa
         overrides['mcp_servers.chat_wait.enabled'] = False
     prompt=(run/'prompt.txt').read_text(encoding='utf-8-sig')
     snapshot_path=(policy or {}).get('tool_snapshot')
-    application=None
-    application_path=None
+    application = None
+    application_path = None
     if snapshot_path:
         snapshot=load_snapshot(snapshot_path,conversation=conversation)
-        if policy.get('knowledge_application',{}).get('enabled'):
+        if snapshot.get('knowledge_application', {}).get('enabled'):
             from knowledge_application import Application
-            application=Application.for_run(run,snapshot)
-            application_path=application.path
+            application = Application.for_run(run, snapshot)
+            application_path = application.path
         prompt=startup_prompt(prompt,snapshot)
         overrides.update(codex_overrides(snapshot_path,existing_servers=config.get('mcp_servers',{}),conversation=conversation,host_wait=True,knowledge_budget=run/'knowledge-budget.sqlite3',research_links=run/'research-links.sqlite3',knowledge_application=application_path))
         for key in list(overrides):
