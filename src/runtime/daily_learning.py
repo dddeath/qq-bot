@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);''')
                 and json.loads(apply.read_text()).get('state')=='completed'
                 and json.loads(receipt.read_text()).get('result',{}).get('knowledge_publication',{}).get('status')=='published')
             if not complete:self.finish_publication_retry(run,publication)
-    def run(self,model,now=None,*,retry_failed=False,retry_publication=False,tag_sessions=None):
+    def run(self,model,now=None,*,retry_failed=False,retry_publication=False,tag_sessions=None,review=None):
         now=time.time() if now is None else now;day=dt.datetime.fromtimestamp(now,TZ).strftime('%Y-%m-%d')
         self.recover_publications(now)
         run=self.root/'runs'/(dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')+'-'+uuid.uuid4().hex[:8])
@@ -163,6 +163,13 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);''')
                 path.write_text(''.join(json.dumps(x,ensure_ascii=False)+'\n' for x in batch[key]),encoding='utf-8')
             write(run/'input/existing-learning.json',self.read(limit=100))
             try:
+                review_receipt=None
+                if review is not None:
+                    review_result=review(run)
+                    summary=run/'review/reading-replay-summary.json'
+                    write(summary,review_result)
+                    review_receipt={'summary_path':str(summary),
+                                    **{key:review_result[key] for key in ('status','day','directory') if key in review_result}}
                 output=model(batch,run) if batch['messages'] or batch['searches'] or batch['creators'] else dict(expressions=[],meanings=[])
                 write(run/'review/candidates.json',output)
                 sources={str(x['id']):x for x in batch['messages']+batch['searches']+batch['creators']}
@@ -212,6 +219,7 @@ CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);''')
                     d.execute("INSERT OR REPLACE INTO settings VALUES('cursor',?)",(str(now),))
                     d.execute("UPDATE days SET state='completed' WHERE day=?",(day,))
                 receipt=dict(state='completed',run=str(run),accepted={k:len(v) for k,v in clean.items()},tag_admission=admission)
+                if review_receipt is not None:receipt['reading_review']=review_receipt
                 if publication is not None:receipt['knowledge_publication']=publication
                 write(run/'apply.json',receipt);write(self.root/'state.json',dict(last_completed_day=day,last_run=str(run),cursor=now))
                 (run/'summary.md').write_text('# 每日学习结果\n\n'+json.dumps(receipt,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')

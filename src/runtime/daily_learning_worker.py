@@ -89,12 +89,6 @@ def model(batch,run,*,video_config=None,context_reader=None,frame_reader=None):
 
     images=enrich_videos(batch,run,video_config or {},context_reader=context_reader,frame_reader=frame_reader)
 
-    from reading_review_runtime import daily_review
-
-    review_result=daily_review(run,video_config or {})
-
-    write(run/'review/reading-replay-summary.json',review_result)
-
     config=tomllib.loads((Path(os.environ['CODEX_HOME'])/'config.toml').read_text())
 
     prompt, materials = learning_input(batch, run)
@@ -213,8 +207,9 @@ def main():
                 collect_creators(k,cfg,now)
 
                 video_config=video_settings(cfg)
-
-                result=k.run(lambda batch,run:model(batch,run,video_config=video_config),time.time(),retry_failed=a.retry_failed,retry_publication=a.once)
+                from reading_review_runtime import daily_review
+                result=k.run(lambda batch,run:model(batch,run,video_config=video_config),time.time(),retry_failed=a.retry_failed,retry_publication=a.once,
+                             review=lambda run:daily_review(run,video_config))
 
                 if a.once or not result['state'].startswith('already_'):print(json.dumps(result,ensure_ascii=False),flush=True)
 
