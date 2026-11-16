@@ -10,6 +10,21 @@ import uuid
 from pathlib import Path
 
 
+def message_record(message, *, event_id, conversation_id, at, source):
+    """Normalize recorded envelopes without losing quote, media or source evidence."""
+    result=copy.deepcopy(message)
+    segments=message.get('segments',[])
+    result.update(event_id=str(event_id),text=message.get('text',message.get('content','')),
+        at=message.get('at',message.get('received_at',at)),
+        conversation_id=message.get('conversation_id',conversation_id),
+        message_id=message.get('message_id',message.get('onebot_message_id')),
+        reply_message_ids=message.get('reply_message_ids',
+            [str(s.get('onebot_message_id',s.get('id'))) for s in segments if s.get('type')=='reply']),
+        mentions=message.get('mentions',[str(s.get('qq')) for s in segments if s.get('type')=='at']),
+        message_source=message.get('message_source',message.get('source')),source=copy.deepcopy(source))
+    return result
+
+
 def link_feedback(reports, replies, messages, *, conversation_id, cutoff,
                   feedback_window_seconds=3600):
     """Keep structural links separate from interpretation of the user's words."""
@@ -17,12 +32,18 @@ def link_feedback(reports, replies, messages, *, conversation_id, cutoff,
         raise ValueError('invalid_feedback_window')
     reports = [copy.deepcopy(r) for r in reports
                if r['conversation_id'] == conversation_id and r['at'] <= cutoff]
-    messages = [copy.deepcopy(m) for m in messages
-                if m['conversation_id'] == conversation_id and m['at'] <= cutoff
-                and not m.get('is_self') and not m.get('synthetic')]
-    by_event = {str(m['event_id']): m for m in messages}
+    by_event = {str(m['event_id']): copy.deepcopy(m) for m in messages
+                if m['conversation_id'] == conversation_id and m['at'] <= cutoff}
+    messages = [m for m in by_event.values() if not m.get('is_self') and not m.get('synthetic')
+                and m.get('message_source') != 'codex_owner_control']
     items = {r['report_id']: dict(report=r, requests=[], replies=[], followups=[],
                                  pending_followups=[]) for r in reports}
+    for item in items.values():
+        targets=item['report'].get('target_event_ids',[])
+        item['requests']=[copy.deepcopy(by_event[str(eid)]) for eid in dict.fromkeys(targets)
+                          if str(eid) in by_event and by_event[str(eid)]['at']<=item['report']['at']]
+        found={str(r['event_id']) for r in item['requests']}
+        item['missing_request_ids']=[str(eid) for eid in targets if str(eid) not in found]
     unresolved = []
     sent = {}
     for reply in replies:
@@ -58,7 +79,11 @@ def link_feedback(reports, replies, messages, *, conversation_id, cutoff,
             continue
         for rid in candidates:
             item = items[rid]
-            item['replies'].append({**copy.deepcopy(reply), 'link_basis': basis})
+            link_basis=basis
+            if item['report'].get('record_origin')=='knowledge_application_decision':
+                link_basis={'kind':'application_reply_plan',
+                    'meaning':'The reply plan references this decision; used_materials are model declarations, not proven semantic adoption.'}
+            item['replies'].append({**copy.deepcopy(reply), 'link_basis': link_basis})
             request = by_event.get(str(reply.get('target_event_id')))
             if request and request['at'] <= reply['at'] and request not in item['requests']:
                 item['requests'].append(copy.deepcopy(request))
@@ -144,6 +169,7 @@ def runtime_materials(run_directories, conversation_id):
     reports, replies = {}, []
     for directory in run_directories:
         path = Path(directory) / 'timed.jsonl'
+        if not path.is_file():continue
         active = []
         for number, row in jsonl(path):
             event = row.get('event', {})
@@ -209,13 +235,8 @@ def read_messages(database, session_id, conversation_id, *, after, before):
         p = json.loads(payload)
         if p.get('conversation_id') != conversation_id or p.get('source') != 'onebot_websocket':
             continue
-        messages.append(dict(event_id=eid, message_id=str(mid), text=p.get('content', ''),
-            at=at, conversation_id=conversation_id, sender_id=p.get('sender_id'),
-            sender=p.get('sender'), is_self=p.get('is_self', False),
-            synthetic=p.get('synthetic', False), truncated=p.get('truncated', False),
-            reply_message_ids=[str(s.get('onebot_message_id', s.get('id')))
-                               for s in p.get('segments', []) if s.get('type') == 'reply'],
-            mentions=[str(s.get('qq')) for s in p.get('segments', []) if s.get('type') == 'at'],
+        messages.append(message_record({**p,'message_id':str(mid),'at':at},event_id=eid,
+            conversation_id=conversation_id,at=at,
             source={'file': str(Path(database).resolve()), 'table': 'chat_inbox', 'row': eid}))
     return messages
 
@@ -224,12 +245,39 @@ def collect_feedback(run_directories, database, session_id, conversation_id, *,
                      cutoff=None, feedback_window_seconds=3600):
     cutoff = time.time() if cutoff is None else cutoff
     reports, replies = runtime_materials(run_directories, conversation_id)
+    from knowledge_application import Application
+    from knowledge_application_replay import review_bundle
+    applications=[]
+    errors=[]
+    for directory in dict.fromkeys(run_directories):
+        if not Path(directory).is_dir():
+            errors.append({'directory':str(directory),'error':'run_directory_missing'})
+            continue
+        for path in sorted((Path(directory)/'knowledge-application').glob('*/application.sqlite3')):
+            try:
+                record=Application(path).export(links_only=True)
+                if record['configuration']['conversation_id']==conversation_id:
+                    applications.append((path,record))
+            except (OSError,ValueError,KeyError,sqlite3.Error) as exc:
+                errors.append({'file':str(path),'error':str(exc)})
     start = min((r['at'] for r in reports), default=cutoff)
+    start = min([start]+[t['at'] for _,record in applications for t in record['turns']])
     # Original request can precede completion; the one-hour window also bounds this lookup.
     messages = read_messages(database, session_id, conversation_id,
                              after=start-feedback_window_seconds, before=cutoff)
-    return link_feedback(reports, replies, messages, conversation_id=conversation_id,
+    result=link_feedback(reports, replies, messages, conversation_id=conversation_id,
                          cutoff=cutoff, feedback_window_seconds=feedback_window_seconds)
+    for path,record in applications:
+        linked=review_bundle(record,messages,cutoff=cutoff,feedback_origin={'kind':'chat_inbox'},
+                             feedback_window_seconds=feedback_window_seconds)['feedback']
+        for item in linked['items']:
+            item['report']['source']={'kind':'knowledge_application','file':str(path.resolve())}
+        result['items'].extend(linked['items'])
+        result['unresolved_replies'].extend(linked['unresolved_replies'])
+    resolved={str(r['message_id']) for item in result['items'] for r in item['replies']}
+    result['unresolved_replies']=[r for r in result['unresolved_replies'] if str(r['reply'].get('message_id')) not in resolved]
+    result['collection_errors']=errors
+    return result
 
 
 def decoded_objects(value):
@@ -256,7 +304,8 @@ def native_task_links(task_id, reports, sessions):
         return links
     by_thread = {}
     for report in reports:
-        by_thread.setdefault(report['native_thread_id'], {})[report['turn_id']] = report['report_id']
+        if report.get('native_thread_id'):
+            by_thread.setdefault(report['native_thread_id'], {})[report['turn_id']] = report['report_id']
     for thread, turns in by_thread.items():
         for path in sorted(Path(sessions).rglob(f'*{thread}.jsonl')):
             owner = None
@@ -291,7 +340,7 @@ def native_task_links(task_id, reports, sessions):
     return links
 
 
-def prepare_review_feedback(settings, output):
+def prepare_review_feedback(settings, output, *, sources=()):
     """One read-only collection path for daily and explicitly requested reviews."""
     cfg = settings.get('reading_review', {})
     feedback = cfg.get('feedback', {})
@@ -304,13 +353,20 @@ def prepare_review_feedback(settings, output):
             for key in ('account', 'group', 'access_db'):
                 if not settings.get(key): raise ValueError('feedback_binding_missing: ' + key)
             directories = list(feedback.get('run_directories', []))
+            for source in sources:
+                original=json.loads(Path(source).read_text(encoding='utf-8-sig'))
+                context=original.get('context',{})
+                identity=context.get('task_context',{}).get('knowledge_application') or {}
+                if context.get('audit_scope')=='qq:'+conversation and identity.get('session_id'):
+                    run=identity.get('run_id')
+                    if run and Path(run).is_absolute():directories.append(run)
             if feedback.get('current_run_path_file'):
                 directories.append(Path(feedback['current_run_path_file']).read_text(encoding='utf-8').strip())
             if not directories: raise ValueError('feedback_binding_missing: run_directories')
             bundle = collect_feedback(list(dict.fromkeys(directories)), settings['access_db'],
                 feedback['session_id'], conversation, cutoff=feedback.get('cutoff'),
                 feedback_window_seconds=feedback.get('window_seconds', 3600))
-            bundle['status'] = 'collected'
+            bundle['status'] = 'collected_partial' if bundle.get('collection_errors') else 'collected'
     except (OSError, ValueError, KeyError, sqlite3.Error) as exc:
         bundle = {'status': 'collection_failed', 'conversation_id': conversation,
                   'items': [], 'error': str(exc)}
@@ -338,10 +394,22 @@ def attach_feedback(original, bundle, *, native_sessions_directory=None):
     thread = original.get('native_thread_id')
     turn = original.get('native_turn_id')
     # Native thread IDs are recorded identities; textual similarity is not one.
-    candidates = [copy.deepcopy(item) for item in bundle['items']
-             if thread and item['report']['native_thread_id'] == thread
+    identity=original.get('context',{}).get('task_context',{}).get('knowledge_application') or {}
+    candidates=[copy.deepcopy(item) for item in bundle['items']
+        if item['report'].get('record_origin') in ('knowledge_application_decision','knowledge_application_task')
+        and identity.get('session_id') and item['report'].get('session_id')==identity['session_id']
+        and identity.get('run_id') and item['report'].get('run_id')==identity['run_id']
+        and original.get('task_id') in item['report'].get('task_ids',[])
+        and (not identity.get('target_event_ids') or
+             set(map(str,identity['target_event_ids']))==set(map(str,item['report'].get('target_event_ids',[]))))]
+    direct=bool(candidates)
+    if not candidates:
+        candidates = [copy.deepcopy(item) for item in bundle['items']
+             if thread and item['report'].get('native_thread_id') == thread
              and (not turn or item['report']['turn_id'] == turn)]
-    evidence = []
+    evidence = [dict(kind='application_task_receipt',task_id=original.get('task_id'),
+        session_id=i['report']['session_id'],run_id=i['report']['run_id'],decision_id=i['report']['decision'].get('decision_id'),
+        source=i['report']['source']) for i in candidates] if direct else []
     if not candidates:
         links = native_task_links(original.get('task_id'), [i['report'] for i in bundle['items']],
                                   native_sessions_directory or bundle.get('native_sessions_directory'))
@@ -350,9 +418,10 @@ def attach_feedback(original, bundle, *, native_sessions_directory=None):
     items = candidates if len(candidates) == 1 else []
     result['research_feedback'] = dict(status='linked' if items else
         'report_identity_ambiguous' if candidates else 'report_identity_unavailable',
-        items=items, association_scope='native_turn', identity_evidence=evidence,
+        items=items, association_scope='application_task' if direct else 'native_turn', identity_evidence=evidence,
         candidate_report_ids=[i['report']['report_id'] for i in candidates],
         collection_file=bundle.get('collection_file'),
+        collection_errors=copy.deepcopy(bundle.get('collection_errors',[])),
         captured_at=bundle['captured_at'],
         feedback_window_seconds=bundle['feedback_window_seconds'],
         interpretation=bundle['interpretation'])

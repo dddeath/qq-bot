@@ -135,7 +135,7 @@ class Application:
     """One Run's scope and decisions; material remains in existing evidence stores."""
     def __init__(self, path):
         self.path = str(path)
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(sqlite3.connect(Path(self.path).resolve().as_uri()+'?mode=ro', uri=True)) as db:
             self.context = json.loads(db.execute('SELECT body FROM context').fetchone()[0])
 
     @classmethod
@@ -532,20 +532,22 @@ class Application:
                 result['result']['structuredContent']={**body,'knowledge_application':receipt}
         return result
 
-    def export(self):
+    def export(self, *, links_only=False):
+        """Export recorded actions; links_only skips material stores for read-only feedback collection."""
         from knowledge_turn_budget import TurnBudget
         budget = TurnBudget(self.context['budget_path'])
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(sqlite3.connect(Path(self.path).resolve().as_uri()+'?mode=ro', uri=True)) as db:
+            db.execute('BEGIN')
             turns=[dict(turn_id=r[0],event=json.loads(r[1]),at=r[2]) for r in db.execute('SELECT * FROM turns ORDER BY rowid')]
             decisions=[json.loads(r[0]) for r in db.execute('SELECT body FROM decisions ORDER BY rowid')]
             calls=[dict(call_id=r[0],turn_id=r[1],tool=r[2],decision_ids=json.loads(r[3]),
                         request=json.loads(r[4]),started_at=r[5],observation=json.loads(r[6]) if r[6] else None)
                    for r in db.execute('SELECT * FROM calls ORDER BY rowid')]
         reads=[]
-        for turn in turns:
+        for turn in ([] if links_only else turns):
             reads.extend(budget.records(turn['turn_id']))
         tasks={}
-        for call in calls:
+        for call in ([] if links_only else calls):
             reference=(call['observation'] or {}).get('evidence_ref') or {}
             if reference.get('kind')=='research_task' and reference['task_id'] not in tasks:
                 try:
