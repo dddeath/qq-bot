@@ -18,6 +18,12 @@ class AppServerTransport:
         self.pending = deque()
         self.sequence = 0
         self.record = record
+        self.runtime = None
+        self.catalog_verified = False
+        self.stage_catalog_required = False
+        for index, value in enumerate(command[:-1]):
+            if value == '-c' and command[index+1].startswith('features.mcp_tool_list_changed='):
+                self.stage_catalog_required = json.loads(command[index+1].split('=', 1)[1]) is True
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _reader(self):
@@ -47,6 +53,8 @@ class AppServerTransport:
         return event
 
     def call(self, method, params, *, timeout=60):
+        if method in ('thread/start', 'thread/resume') and self.stage_catalog_required and not self.catalog_verified:
+            self._verify_stage_catalog(timeout)
         self.sequence += 1
         request_id = self.sequence
         self.send({'id': request_id, 'method': method, 'params': params})
@@ -59,9 +67,39 @@ class AppServerTransport:
             if 'method' not in event and event.get('id') == request_id:
                 if 'error' in event:
                     raise RuntimeError(event['error'])
+                if method == 'initialize':
+                    self.runtime = event['result'].get('userAgent')
                 return event['result']
             if 'method' in event and 'id' not in event:
                 self.pending.append(event)
+
+    def _verify_stage_catalog(self, timeout):
+        """Check the actual connected host before starting or resuming a thread."""
+        cursor = None
+        seen = set()
+        deadline = time.monotonic() + min(timeout, 30)
+        feature = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Codex stage catalog capability check timeout')
+            page = self.call('experimentalFeature/list', {'limit':100, **({'cursor':cursor} if cursor else {})}, timeout=remaining)
+            feature = next((item for item in page.get('data', []) if item.get('name') == 'mcp_tool_list_changed'), None)
+            if feature:
+                break
+            cursor = page.get('nextCursor')
+            if not cursor:
+                break
+            if cursor in seen:
+                raise RuntimeError('Codex stage catalog capability pagination repeated')
+            seen.add(cursor)
+        verified = bool(feature and feature.get('enabled') is True and feature.get('stage') != 'removed')
+        self.record({'method':'host/runtimeCapabilities', 'params':{
+            'runtime':self.runtime, 'required_feature':'mcp_tool_list_changed',
+            'feature':feature, 'verified':verified}})
+        if not verified:
+            raise RuntimeError('Codex runtime lacks enabled mcp_tool_list_changed; install the pinned config/codex-runtime.json runtime before starting this session')
+        self.catalog_verified = True
 
     def next_event(self, timeout):
         if self.pending:

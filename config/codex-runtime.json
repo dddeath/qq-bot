@@ -1,0 +1,5 @@
+{
+  "package": "@openai/codex",
+  "version": "0.167.0-alpha.4.1",
+  "stage_catalog_feature": "mcp_tool_list_changed"
+}

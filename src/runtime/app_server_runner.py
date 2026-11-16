@@ -185,9 +185,8 @@ def run_context_chat(run, thread, *, policy, tulpa_session, conversation, activa
         for key in list(overrides):
             if key.endswith('.enabled_tools'):
                 overrides[key]=[name for name in overrides[key] if name!='wait_chat_messages']
-    command = ['bash', '-lc', 'source "$HOME/.local/qq-bot-runtime/env.sh"; exec codex app-server "$@"', 'context-runner']
-    for key, value in overrides.items():
-        command += ['-c', key+'='+json.dumps(value)]
+    from codex_runtime import app_server_command
+    command = app_server_command(overrides)
     tracker = ToolDurations(thread, strategy)
     event_session = None
     with (run/'app-server.jsonl').open('x', encoding='utf-8') as raw, (run/'context-events.jsonl').open('x', encoding='utf-8') as evidence, (run/'app-server.stderr').open('x') as err, (run/'timed.jsonl').open('x', encoding='utf-8') as timed, (run/'run.jsonl').open('x', encoding='utf-8') as legacy:
