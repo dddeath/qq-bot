@@ -64,6 +64,7 @@ class RetrievalIndex:
 class KnowledgeRetrieval:
     def __init__(self, store, index, encoder, *, cutoff=None, policy=None):
         self.store, self.index, self.encoder = store, index, encoder
+        self.base_index = index
         self.policy = RetrievalPolicy.load(policy)
         indexed_k = index.manifest.get('nomination_K')
         if indexed_k is not None and indexed_k != self.policy.nomination_K:
@@ -85,7 +86,25 @@ class KnowledgeRetrieval:
         return self.vectors[text]
 
     def view(self):
-        current = self.store.retrieval_view()
+        data = self.store._load()
+        ref = data.get('retrieval_publication')
+        if not ref and self.index is not self.base_index:
+            self.index = self.base_index
+            self.literal_records.clear()
+        if ref:
+            from knowledge_publication import index_path
+            selected_path = index_path(data, '', self.store.path)
+        if ref and ref['index_id'] != self.index.manifest['index_id']:
+            index = RetrievalIndex(selected_path)
+            if index.manifest['index_id'] != ref['index_id']:
+                raise ValueError('knowledge_publication_index_mismatch')
+            if index.manifest.get('encoder', {}).get('fingerprint') != self.encoder.identity.get('fingerprint'):
+                raise ValueError('retrieval_encoder_identity_mismatch')
+            if index.manifest.get('nomination_K', 2) != self.policy.nomination_K:
+                raise ValueError('retrieval_graph_policy_mismatch')
+            self.index = index
+            self.literal_records.clear()
+        current = self.store.retrieval_view(data)
         cutoff = self.cutoff or datetime.now(timezone.utc)
         entries, visible = {}, {}
         excluded = dict(index_missing=0, index_revision_changed=0, newer_than_cutoff=0)

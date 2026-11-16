@@ -65,7 +65,11 @@ def prepare_update(base_snapshot, mappings, entries, policy, annotations, output
     out = Path(output)
     out.mkdir(parents=True, exist_ok=False)
     (out / 'base.json').write_bytes(raw)
-    (out / 'snapshot.json').write_bytes(raw)
+    # This private proposal is not a queryable publication. Its CRUD operations
+    # are consolidated into one indexed commit against the real target below.
+    proposal = dict(base)
+    proposal.pop('retrieval_publication', None)
+    write_json(out / 'snapshot.json', proposal)
     collections = {e['collection'] for e in base['entries'].values()} | {c for _, c, _, _ in prepared}
     store = EntryStore(out / 'snapshot.json', collections)
     definitions = reviewed_tags if reviewed_tags is not None else {t['id']: t for t in policy['tags']}
@@ -120,6 +124,8 @@ def prepare_update(base_snapshot, mappings, entries, policy, annotations, output
         changes.append(dict(source_id=identity, action='source_missing', reason='retained_pending_review'))
     data = json.loads((out / 'snapshot.json').read_text(encoding='utf-8'))
     data['import_mappings'] = list(old.values())
+    if base.get('retrieval_publication'):
+        data['retrieval_publication'] = base['retrieval_publication']
     write_json(out / 'snapshot.json', data)
     write_json(out / 'entries.input.json', entries)
     write_json(out / 'policy.input.json', policy)
@@ -152,7 +158,7 @@ def _replace_checked(target, expected, replacement, commit):
         lock.unlink(missing_ok=True)
 
 
-def publish_candidate(candidate, target, approved_sha256):
+def publish_candidate(candidate, target, approved_sha256, *, retrieval_profile=None):
     """Host operation after review; not exposed to role-facing MCP tools."""
     candidate, target = Path(candidate), Path(target).resolve()
     manifest = json.loads((candidate / 'manifest.json').read_text(encoding='utf-8'))
@@ -167,14 +173,24 @@ def publish_candidate(candidate, target, approved_sha256):
         raise ValueError('target_is_evidence')
     receipt_path = candidate / 'publish.json'
     receipt = dict(status='published', target=str(target), before_sha256=manifest['base_sha256'],
-                   after_sha256=approved_sha256)
+                   candidate_sha256=approved_sha256)
     if receipt_path.exists():
         previous = json.loads(receipt_path.read_text(encoding='utf-8'))
-        if any(previous.get(k) != v for k, v in receipt.items()) or digest(target.read_bytes()) != approved_sha256:
+        compared = {**previous, 'candidate_sha256': previous.get('candidate_sha256', previous.get('after_sha256'))}
+        if any(compared.get(k) != v for k, v in receipt.items()) or digest(target.read_bytes()) != previous['after_sha256']:
             raise ValueError('publication_changed')
         return previous
     receipt['published_at'] = now()
-    _replace_checked(target, manifest['base_sha256'], raw, lambda: write_json(receipt_path, receipt))
+    replacement = json.loads(raw)
+    store = EntryStore(target, {e['collection'] for e in replacement['entries'].values()})
+    if retrieval_profile:
+        from knowledge_publication import IndexPublisher
+        store.publication = IndexPublisher.from_profile(store, retrieval_profile)
+    result = store.replace_snapshot(replacement, manifest['base_sha256'])
+    receipt['after_sha256'] = result['snapshot_sha256']
+    if result.get('publication'):
+        receipt['publication'] = result['publication']
+    write_json(receipt_path, receipt)
     return receipt
 
 
@@ -210,6 +226,7 @@ def main():
     publish.add_argument('--candidate', required=True)
     publish.add_argument('--target', required=True)
     publish.add_argument('--approved-sha256', required=True)
+    publish.add_argument('--retrieval-profile')
     rollback = sub.add_parser('rollback')
     rollback.add_argument('--candidate', required=True)
     args = p.parse_args()
@@ -231,7 +248,8 @@ def main():
                                 read(args.annotations) if args.annotations else {}, args.output)
         write_json(Path(args.output) / 'source-status.json', status)
     elif args.action == 'publish':
-        result = publish_candidate(args.candidate, args.target, args.approved_sha256)
+        result = publish_candidate(args.candidate, args.target, args.approved_sha256,
+                                   retrieval_profile=args.retrieval_profile)
     else:
         result = rollback_candidate(args.candidate)
     print(json.dumps(result, ensure_ascii=False))

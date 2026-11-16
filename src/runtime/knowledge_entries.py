@@ -16,11 +16,17 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def catalog_documents(knowledge_root):
+    manifest = Path(knowledge_root) / 'catalog.json' if knowledge_root else None
+    return json.loads(manifest.read_text(encoding='utf-8-sig'))['documents'] if manifest and manifest.is_file() else {}
+
+
 class EntryStore:
-    def __init__(self, path, collections, documents=None):
+    def __init__(self, path, collections, documents=None, publication=None):
         self.path = Path(path)
         self.collections = frozenset(collections)
         self.documents = documents or {}
+        self.publication = publication
 
     @classmethod
     def for_reader(cls, path, account, group, knowledge_root=None):
@@ -30,21 +36,27 @@ class EntryStore:
         collections = ['formal']
         if str(account).isdigit() and str(group).isdigit():
             collections.extend((f'learning:{account}:{group}', f'profile:{account}:{group}'))
-        manifest = Path(knowledge_root) / 'catalog.json' if knowledge_root else None
-        documents = json.loads(manifest.read_text(encoding='utf-8-sig'))['documents'] if manifest and manifest.is_file() else {}
-        return cls(path, collections, documents)
+        return cls(path, collections, catalog_documents(knowledge_root))
 
     def _load(self):
         if not self.path.exists():
             return dict(protocol_version=1, tags={}, entries={}, history={})
         return json.loads(self.path.read_text(encoding='utf-8'))
 
-    def retrieval_view(self):
+    def retrieval_view(self, data=None):
         """Current active source revisions in this reader's collection grants."""
-        return {key: entry for key, entry in self._load()['entries'].items()
+        return {key: entry for key, entry in (self._load() if data is None else data)['entries'].items()
                 if entry['collection'] in self.collections and entry['status'] == 'active'}
 
-    def _write(self, action):
+    def replace_snapshot(self, replacement, expected_sha256):
+        """Host-only reviewed snapshot commit through the normal publication boundary."""
+        def apply(data):
+            data.clear()
+            data.update(copy.deepcopy(replacement))
+            return {}
+        return self._write(apply, expected_sha256=expected_sha256)
+
+    def _write(self, action, *, expected_sha256=None):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock = self.path.with_suffix('.lock')
         try:
@@ -54,10 +66,28 @@ class EntryStore:
         tmp = self.path.with_name(self.path.name + '.' + uuid.uuid4().hex + '.tmp')
         try:
             os.close(fd)
+            if expected_sha256 is not None:
+                import hashlib
+                if hashlib.sha256(self.path.read_bytes()).hexdigest() != expected_sha256:
+                    raise ValueError('active_snapshot_changed')
             data = self._load()
+            before = copy.deepcopy(data)
             result = action(data)
+            if data != before:
+                if self.publication is not None:
+                    from knowledge_publication import KEY
+                    reference = self.publication.prepare(self.path, before, data)
+                    data[KEY] = reference
+                    result = {**result, 'publication': {k: reference[k] for k in
+                              ('generation', 'index_id', 'changed_entries')}}
+                elif before.get('retrieval_publication'):
+                    raise ValueError('knowledge_publication_required: use the configured maintenance entry point')
             tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+            if expected_sha256 is not None:
+                result['snapshot_sha256'] = hashlib.sha256(tmp.read_bytes()).hexdigest()
             os.replace(tmp, self.path)
+            if 'publication' in result:
+                result['publication']['status'] = 'published'
             return result
         finally:
             tmp.unlink(missing_ok=True)

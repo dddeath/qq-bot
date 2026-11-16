@@ -4,7 +4,7 @@ from pydantic import Field
 import json
 import os
 
-from knowledge_entries import EntryStore
+from knowledge_entries import EntryStore, catalog_documents
 from knowledge_query import QUERY_TEXT_MAX
 from knowledge_retrieval_policy import FINAL_LIMIT, PASSAGES_PER_PARENT, PAGE_CHARACTERS
 
@@ -48,7 +48,12 @@ def create_app(store, read_only=False, retrieval=None):
         'Collection access is bound by the host. Maintenance requires the current revision '
         'and a reason. Before merging, read both entries and update the retained body to '
         'preserve useful information; merge retains target body and unions tags/sources. '
-        'Sources and old revisions are audit material, read only when needed.'))
+        'Sources and old revisions are audit material, read only when needed. '
+        + ('Writes publish the entry revision and its lexical, body-vector and reviewed graph index together. '
+           'publication.status=published means the same reader can query that generation immediately. '
+           'A publication error leaves the prior revision active; repair the stated cause before retrying. '
+           'Graph review may legitimately find no relation. Do not invent an edge or change the body to force one.'
+           if store.publication is not None else '')))
     read = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
     write = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 
@@ -155,6 +160,20 @@ def create_app(store, read_only=False, retrieval=None):
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--retrieval-profile', help='Host-owned index, encoder and atomic publication configuration')
+    options = parser.parse_args()
     store = EntryStore(os.environ['QQ_ENTRY_STORE'],
-                       json.loads(os.environ['QQ_ENTRY_COLLECTIONS']))
-    create_app(store).run(transport='stdio')
+                       json.loads(os.environ['QQ_ENTRY_COLLECTIONS']),
+                       documents=catalog_documents(os.environ.get('QQ_KNOWLEDGE_ROOT')))
+    retrieval = None
+    if options.retrieval_profile:
+        from knowledge_publication import IndexPublisher
+        from knowledge_retrieval import KnowledgeRetrieval, RetrievalIndex
+        from knowledge_publication import load
+        store.publication = IndexPublisher.from_profile(store, options.retrieval_profile)
+        profile = load(options.retrieval_profile)
+        retrieval = KnowledgeRetrieval(store, RetrievalIndex(store.publication.index), store.publication.encoder,
+            cutoff=profile.get('cutoff'), policy=profile.get('policy'))
+    create_app(store, retrieval=retrieval).run(transport='stdio')

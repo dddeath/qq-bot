@@ -61,7 +61,8 @@ def publish_learning(learning, config, run):
     if prepared["counts"].get("conflict"):
         result = dict(status="conflict", directory=str(folder), counts=prepared["counts"])
     else:
-        result = publish_candidate(folder, target, prepared["candidate_sha256"])
+        result = publish_candidate(folder, target, prepared["candidate_sha256"],
+                                   retrieval_profile=config.get("retrieval_profile"))
         result = {**result, "directory": str(folder), "counts": prepared["counts"]}
     write_json(Path(run)/"tag-publication.json", result)
     return result
