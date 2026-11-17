@@ -26,7 +26,7 @@ def message_record(message, *, event_id, conversation_id, at, source):
 
 
 def link_feedback(reports, replies, messages, *, conversation_id, cutoff,
-                  feedback_window_seconds=3600):
+                  feedback_window_seconds=3600, observation=None):
     """Keep structural links separate from interpretation of the user's words."""
     if feedback_window_seconds <= 0:
         raise ValueError('invalid_feedback_window')
@@ -35,7 +35,8 @@ def link_feedback(reports, replies, messages, *, conversation_id, cutoff,
     by_event = {str(m['event_id']): copy.deepcopy(m) for m in messages
                 if m['conversation_id'] == conversation_id and m['at'] <= cutoff}
     messages = [m for m in by_event.values() if not m.get('is_self') and not m.get('synthetic')
-                and m.get('message_source') != 'codex_owner_control']
+                and m.get('message_source') != 'codex_owner_control'
+                and str(m.get('sender_id','')) != conversation_id.split(':',1)[0]]
     items = {r['report_id']: dict(report=r, requests=[], replies=[], followups=[],
                                  pending_followups=[]) for r in reports}
     for item in items.values():
@@ -112,10 +113,52 @@ def link_feedback(reports, replies, messages, *, conversation_id, cutoff,
                     basis={'kind': 'time_window_only', 'reply_message_ids': list(eligible)},
                     classification='association_unresolved'))
         item['status'] = 'linked' if item['replies'] else 'no_linked_sent_reply'
+        item['engagement'] = reply_engagement(item, messages, cutoff=cutoff,
+            window=feedback_window_seconds, observation=observation)
     return dict(schema_version=1, conversation_id=conversation_id, captured_at=cutoff,
                 feedback_window_seconds=feedback_window_seconds,
                 items=list(items.values()), unresolved_replies=unresolved,
+                observation=copy.deepcopy(observation),
                 interpretation='Follow-ups are original messages; relevance and evaluation are not inferred.')
+
+
+def reply_engagement(item, messages, *, cutoff, window, observation):
+    """Absence is a weak interest signal, separately evidenced from explicit feedback."""
+    finals = [r for r in item['replies'] if r.get('phase') == 'final']
+    result = dict(status='no_final_sent_reply', signal=None, dimension='interaction_interest',
+                  reply_message_ids=[str(r['message_id']) for r in finals],
+                  observation=copy.deepcopy(observation) or {'status':'unavailable'},
+                  activity={'message_count':0, 'sender_count':0},
+                  requires_followup_review=False, candidate_signal=None)
+    if not finals:
+        return result
+    first, last = min(r['at'] for r in finals), max(r['at'] for r in finals)
+    end = last + window
+    result['observation'].update(window_start=first, window_end=end,
+                                 window_seconds=window, captured_at=cutoff)
+    nearby = [m for m in messages if first < m['at'] <= min(end,cutoff)]
+    result['activity'] = dict(message_count=len(nearby),
+        sender_count=len({str(m['sender_id']) for m in nearby if m.get('sender_id') is not None}),
+        event_ids=[str(m['event_id']) for m in nearby])
+    ids=set(result['reply_message_ids'])
+    explicit=[f for f in item['followups'] if ids.intersection(f['basis']['reply_message_ids'])]
+    pending=[f for f in item['pending_followups'] if ids.intersection(f['basis']['reply_message_ids'])]
+    result.update(explicit_followup_count=len(explicit), pending_followup_count=len(pending))
+    if explicit:
+        result['status']='responded'
+    elif cutoff < end:
+        result['status']='awaiting_window'
+    elif (not observation or observation.get('status')!='complete'
+          or observation.get('from_at',first+1)>first or observation.get('through_at',0)<end
+          or any(m.get('gap_count',0) for m in nearby)
+          or any(first < gap['at'] <= end for gap in observation.get('gaps',[]))):
+        result['status']='observation_incomplete'
+    else:
+        result.update(status='followup_review_required' if pending else 'no_response',
+            signal=None if pending else 'weak_negative',candidate_signal='weak_negative' if pending else None,
+            requires_followup_review=bool(pending),
+            rationale='完整观察窗内无回应可作为可能缺乏吸引力的弱信号；附近消息存在时先核验是否实际承接，尚不计弱差评。该信号不代表用户明确差评或事实错误。')
+    return result
 
 
 def jsonl(path):
@@ -164,6 +207,24 @@ def full_report(result, database, conversation_id):
                            else 'registered_body_unavailable'), source
 
 
+def background_reports(event, directory, conversation_id, at, source):
+    """Read the same report references delivered by host events or legacy waits."""
+    body=event.get('payload',event)
+    if body.get('event')!='background_results':return []
+    records=[]
+    for result in body.get('results',[]):
+        data=result.get('result') or {}
+        text,turn,agent=data.get('last_agent_message'),data.get('turn_id'),result.get('agent_id')
+        if not text or not turn or not agent:continue
+        rid=agent+':'+turn
+        if result.get('report_ref',{}).get('report_id',rid)!=rid:continue
+        text,version,status,registry=full_report(result,Path(directory)/'research-links.sqlite3',conversation_id)
+        records.append(dict(report_id=rid,version=version,native_thread_id=agent,turn_id=turn,
+            root_turn_id=data.get('root_turn_id'),text=text,content_status=status,registry_source=registry,
+            at=at,conversation_id=conversation_id,source=copy.deepcopy(source)))
+    return records
+
+
 def runtime_materials(run_directories, conversation_id):
     """Read actual tool receipts and reports delivered in the same response turn."""
     reports, replies = {}, []
@@ -181,26 +242,10 @@ def runtime_materials(run_directories, conversation_id):
             body = body_of(item)
             if item.get('tool') == 'wait_chat_messages':
                 active = []
-                if body.get('event') != 'background_results':
-                    continue
-                for result in body.get('results', []):
-                    data = result.get('result') or {}
-                    text = data.get('last_agent_message')
-                    tid = data.get('turn_id')
-                    agent = result.get('agent_id')
-                    if not text or not tid or not agent:
-                        continue
-                    rid = agent + ':' + tid
-                    if result.get('report_ref', {}).get('report_id', rid) != rid:
-                        continue
-                    text, version, content_status, registry_source = full_report(
-                        result, Path(directory)/'research-links.sqlite3', conversation_id)
-                    reports.setdefault(rid, dict(report_id=rid, version=version, native_thread_id=agent,
-                        turn_id=tid, root_turn_id=data.get('root_turn_id'), text=text,
-                        content_status=content_status, registry_source=registry_source,
-                        at=row['observed_at'], conversation_id=conversation_id,
-                        source={'file': str(path.resolve()), 'line': number}))
-                    active.append(rid)
+                for report in background_reports(body,directory,conversation_id,row['observed_at'],
+                        {'file':str(path.resolve()),'line':number}):
+                    reports.setdefault(report['report_id'],report)
+                    active.append(report['report_id'])
             elif item.get('tool') == 'send_chat_reply':
                 for bubble in body.get('bubbles', []):
                     receipt = bubble.get('receipt') or {}
@@ -265,15 +310,40 @@ def collect_feedback(run_directories, database, session_id, conversation_id, *,
     # Original request can precede completion; the one-hour window also bounds this lookup.
     messages = read_messages(database, session_id, conversation_id,
                              after=start-feedback_window_seconds, before=cutoff)
-    result=link_feedback(reports, replies, messages, conversation_id=conversation_id,
-                         cutoff=cutoff, feedback_window_seconds=feedback_window_seconds)
+    observation=dict(status='complete' if not errors else 'partial',
+        from_at=start-feedback_window_seconds,through_at=max((m['at'] for m in messages),default=0),
+        queried_through=cutoff,source={'file':str(Path(database).resolve()),'table':'chat_inbox',
+            'session_id':session_id,'conversation_id':conversation_id},
+        gaps=[{'at':t['at'],'gap_count':t['event'].get('payload',t['event'])['gap_count'],
+               'note':t['event'].get('payload',t['event']).get('gap_note'),
+               'source':{'file':str(path.resolve()),'turn_id':t['turn_id']}}
+              for path,record in applications for t in record['turns']
+              if t['event'].get('payload',t['event']).get('gap_count',0)],
+        basis='Complete scoped query; through_at is the last recorded group message, not an inferred online/read receipt.')
+    direct_items=[];unresolved=[]
     for path,record in applications:
         linked=review_bundle(record,messages,cutoff=cutoff,feedback_origin={'kind':'chat_inbox'},
-                             feedback_window_seconds=feedback_window_seconds)['feedback']
-        for item in linked['items']:
+                             feedback_window_seconds=feedback_window_seconds,feedback_observation=observation)
+        for item in linked['feedback']['items']:
             item['report']['source']={'kind':'knowledge_application','file':str(path.resolve())}
-        result['items'].extend(linked['items'])
-        result['unresolved_replies'].extend(linked['unresolved_replies'])
+        direct_items.extend(linked['feedback']['items'])
+        unresolved.extend(linked['feedback']['unresolved_replies'])
+        # Host waiting delivers background reports without a model wait tool call.
+        directory=path.parent.parent.parent
+        for turn in record['turns']:
+            reports.extend(background_reports(turn['event'],directory,conversation_id,turn['at'],
+                {'kind':'host_delivered_event','file':str(path.resolve()),'turn_id':turn['turn_id']}))
+        for reply in linked['outputs']:
+            association=reply.get('research_association') or {}
+            if (association.get('conversation_id')==conversation_id
+                    and association.get('plan_id')==reply.get('plan_id') and association.get('reports')):
+                replies.append({**reply,'report_refs':copy.deepcopy(association['reports'])})
+    # An application receipt also records phase/material usage omitted by timed logs.
+    replies.sort(key=lambda r:bool(r.get('phase')),reverse=True)
+    result=link_feedback(reports,replies,messages,conversation_id=conversation_id,
+        cutoff=cutoff,feedback_window_seconds=feedback_window_seconds,observation=observation)
+    result['items'].extend(direct_items)
+    result['unresolved_replies'].extend(unresolved)
     resolved={str(r['message_id']) for item in result['items'] for r in item['replies']}
     result['unresolved_replies']=[r for r in result['unresolved_replies'] if str(r['reply'].get('message_id')) not in resolved]
     result['collection_errors']=errors

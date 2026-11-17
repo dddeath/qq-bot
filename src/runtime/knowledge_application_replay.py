@@ -5,7 +5,7 @@ import json
 from research_feedback import link_feedback, message_record
 
 
-def review_bundle(record, feedback, *, cutoff, feedback_origin, feedback_window_seconds=3600):
+def review_bundle(record, feedback, *, cutoff, feedback_origin, feedback_window_seconds=3600, feedback_observation=None):
     """Reuse QQ feedback linking; missing sends, usage and motives remain missing."""
     conversation=record['configuration']['conversation_id']
     reports=[]
@@ -70,7 +70,7 @@ def review_bundle(record, feedback, *, cutoff, feedback_origin, feedback_window_
                 completion=((plan or {}).get('request',{}).get('declaration') or {}).get('completion'),
                 research_association=observation.get('research_association'),source={'kind':'tool_receipt'}))
     linked=link_feedback(reports,replies,[*messages,*deepcopy(feedback)],conversation_id=conversation,cutoff=cutoff,
-                         feedback_window_seconds=feedback_window_seconds)
+                         feedback_window_seconds=feedback_window_seconds, observation=feedback_observation)
     for item in linked['items']:
         rid=item['report']['report_id']
         related=[c for c in record['calls'] if rid in c['decision_ids'] and c['started_at']<=cutoff]
