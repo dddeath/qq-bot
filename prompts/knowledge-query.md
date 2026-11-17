@@ -14,3 +14,16 @@
 未选方向的字段填空字符串。不另写判断过程。
 
 以下是对话数据。
+<!-- query-decision-v2 -->
+【同次输出查询与逐查询判断】
+返回 query_plan 和 query_decisions。query_plan 包含 information_need、expression_need，以及0至4项 queries。
+每项 queries 的 purpose 为 information 或 expression；text 是实际检索文本，1至40字，保留实体与关系线索。
+information 只填 purpose、text。expression 还填写 keywords（表达关系关键词）与 need（完整承接需求）。
+没有某类需求时，相应 need 字段留空。没有新增查询时，queries 与 query_decisions 同时为空，可保留需求背景，不编造查询。
+
+对每项查询分别完成两步判断：
+1. 先核对收益依据。能够排除这项查询的信息和表达收益，给0；有明确依据确认收益，给1。已有一版答案、尚未查过、一次未命中或预算用尽，都不足以单独支持0。
+2. 其余情况给大于0、小于1的 subjective_inclination，表示这项查询的补读倾向。它不表示事实正确率或搜索成功率。
+query_decisions 每项用 query_index 对应本次 queries 的序号（从0开始），填写 subjective_inclination 和简短 expected_gain 依据；每个查询恰好一项判断。
+查询和各项判断在同一次输出完成，不要求为每项查询分别请求模型。重试和同目的措辞改写沿用已有查询身份及首次判断。
+模型只提交主观倾向与依据，实际执行许可由宿主返回。已读概览可复用；获准继续读取也不要求用满预算。

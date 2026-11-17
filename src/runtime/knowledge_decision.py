@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from knowledge_query import GUIDE as ROUTE_GUIDE
 from knowledge_query import QUERY_TEXT_MAX
+from knowledge_query import routing_guidance, validate_contract_schema, query_error
 import sqlite3
 import time
 import uuid
@@ -15,7 +16,7 @@ LOCAL_READS = {'get_knowledge_tag_index', 'search_knowledge_tags',
                'find_knowledge_entries', 'read_knowledge_entry', 'retrieve_knowledge_candidates'}
 DEFAULTS = {'max_calls': 0, 'max_seconds': 0, 'max_characters': 0,
             'total_calls': 6, 'total_seconds': 300, 'reserve_seconds': 60}
-from knowledge_query import QUERY_PLAN_SCHEMA, query_guidance
+from knowledge_query import QUERY_PLAN_SCHEMA, query_guidance, QUERY_DECISION_VERSION, query_plan_schema, query_decision_schema
 QUERY_GUIDANCE = query_guidance()
 CONFIG_SCHEMA = {'type': 'object', 'properties': {
     key: {'type': 'integer' if key.endswith(('calls', 'characters')) else 'number',
@@ -65,7 +66,9 @@ DECISION_GUIDANCE = (
     '在 objective、expected_gain 中简述目标、依据与材料引用。轻量查阅已取得可用材料时可提交1并直接复用材料收尾。')
 
 
-def initial_arguments():
+def initial_arguments(protocol_version=VERSION):
+    if protocol_version not in (VERSION, QUERY_DECISION_VERSION):
+        raise ValueError('unknown_knowledge_decision_protocol')
     return {'decision_stage':'assess','goal':'查明尚未知晓的物件加成数值',
         'query_plan':{'information_need':'回答所需数值未知','expression_need':'',
                       'queries':[{'purpose':'information','text':'物件名 加成数值'}]},
@@ -73,22 +76,51 @@ def initial_arguments():
                       'target_event_ids':['原消息ID'],'objective':'补齐回答必需的加成数值','expected_gain':'当前材料缺少数值，查阅可补足答案'}}
 
 
-def initial_example_guidance():
-    improvement = initial_arguments()
+def initial_example_guidance(protocol_version=VERSION):
+    improvement = initial_arguments(protocol_version)
     improvement.update(goal='已有加成数值，查找可补充的使用案例',
         query_plan={'information_need':'已有足够信息回答数值，补充使用案例','expression_need':'',
                     'queries':[{'purpose':'information','text':'物件名 使用案例'}]})
     improvement['_knowledge'].update(trigger='answer_improvement',objective='改善已有够用答案',
                                      expected_gain='已有可靠加成数值，可补充案例以便理解')
-    return ('首次 assess 示例（回答所需数值未知）：'+json.dumps(initial_arguments(),ensure_ascii=False,separators=(',',':'))+'\n'
+    text = ('首次 assess 示例（回答所需数值未知）：'+json.dumps(initial_arguments(),ensure_ascii=False,separators=(',',':'))+'\n'
         '首次 assess 对照示例（已有足够信息）：'+json.dumps(improvement,ensure_ascii=False,separators=(',',':'))+'\n'
         'trigger 按开始本次查阅前的信息状态分类：缺少回答必需事实用 information_gap；'
         '已有足够信息作答，补充案例或表达可改善答案时用 answer_improvement；'
         '表达需求和话题深入分别用 expression、discussion_deepening。示例类别不是默认值；'
         'commit 时填入开始本次查阅时的起因，即使资料已补齐原缺口。')
+    if protocol_version == QUERY_DECISION_VERSION:
+        first = initial_arguments(protocol_version)
+        first.update(decision_stage='commit',query_decisions=[{
+            'query_index':0,'subjective_inclination':1,
+            'expected_gain':'回答必需的加成数值未知，查阅可补足答案'}])
+        existing = deepcopy(first)
+        existing.pop('goal');existing.pop('query_plan')
+        existing['task_id']='宿主返回的task_id'
+        existing['query_decisions'][0].pop('query_index')
+        existing['query_decisions'][0]['query_id']='宿主返回的query_id'
+        text += ('\n首次 commit 示例：'+json.dumps(first,ensure_ascii=False,separators=(',',':'))+
+                 '\n已有任务 commit 示例：'+json.dumps(existing,ensure_ascii=False,separators=(',',':'))+
+                 '\n已有任务的标识替换为宿主实际返回值；读取用 _reading.query_id，首次提交计划用 query_index。')
+    return text
 
 
-def guidance():
+def guidance(protocol_version=VERSION):
+    if protocol_version == QUERY_DECISION_VERSION:
+        return ('## 知识应用 '+QUERY_DECISION_VERSION+'\n'+query_guidance(protocol_version)+'\n'
+            +initial_example_guidance(protocol_version)+'\n'+routing_guidance(protocol_version)+'\n'
+            '唯一入口为 begin_reading_task。decision_stage=assess 时只提交初始计划、goal 与任务声明，'
+            '不填 query_decisions；commit 才提交逐查询判断，可在首次调用同次提交完整计划与判断。'
+            '首次 commit 每项用 query_index 对应同次计划；已有任务沿用 task_id，改用宿主返回的 query_id。'
+            '同一查询重试或改写沿用首次结果，不重新抽样。_knowledge 只说明原任务、起因与目标消息，'
+            '逐查询依据写在 query_decisions[].expected_gain。无新增查询时两个数组同时为空。'
+            '信息和表达查询各自判断收益，不把一个查询的结果代替另一个。'
+            '读取仅使用宿主已开放的动作和获准 query_id，_reading.purpose 仍为 targeted 或 explore。'
+            'continue_reading 为任务摘要，执行以对应查询的 can_read 和剩余预算为准。'
+            '已有材料可复用，获准读取也可提前收尾；后台与直接读取共用任务预算。'
+            '完成用 finish_reading_task 保存停止原因、结论与实际材料应用。')
+    if protocol_version != VERSION:
+        raise ValueError('unknown_knowledge_decision_protocol')
     return ('## 知识应用 '+VERSION+'\n'+QUERY_GUIDANCE+'\n'
         +initial_example_guidance()+'\n'
         +ROUTE_GUIDE+'\n'
@@ -110,8 +142,49 @@ TOOL_DESCRIPTION = 'Create or reuse the knowledge-reading decision for the origi
 TOOL_DESCRIPTION += '\n'+initial_example_guidance()
 
 
+def tool_contract(protocol_version=VERSION):
+    """Shared discovery/validation contract; v2 is opt-in until runtime migration."""
+    schema=begin_schema(protocol_version)
+    description=TOOL_DESCRIPTION
+    if protocol_version == QUERY_DECISION_VERSION:
+        description=(
+            'Create or reuse one reading task for the original messages. assess submits goal, query_plan and '
+            '_knowledge without query_decisions. commit submits independent query_decisions with '
+            'subjective_inclination and expected_gain per query: a first commit uses query_index in its '
+            'query_plan; an existing task uses returned query_id and task_id. Preserve IDs and first '
+            'decisions on retry. Reading permission is returned by the host per query; reuse existing '
+            'materials and finish_reading_task when done.\n'+guidance(protocol_version))
+    return {'name':'begin_reading_task','description':description,'inputSchema':schema}
 
-def begin_schema():
+
+
+def begin_schema(protocol_version=VERSION):
+    if protocol_version == QUERY_DECISION_VERSION:
+        result = begin_schema()
+        props = result['properties']
+        props['_knowledge']['properties'].pop('subjective_inclination')
+        props['_knowledge']['description'] = 'Original task declaration; per-query inclinations belong in query_decisions.'
+        for key in ('objective','expected_gain'):
+            props['_knowledge']['properties'][key].update(minLength=1,pattern=r'\S')
+        props['query_plan'] = query_plan_schema(QUERY_DECISION_VERSION)
+        props['query_decisions'] = query_decision_schema()
+        props['query_decisions']['description'] = 'One inclination and evidence per query. First commit uses query_index; an existing task uses query_id. Reuse the first decision on retry.'
+        props['task_id'].update(minLength=1,pattern=r'\S')
+        props['goal']['pattern']=r'\S'
+        props['decision_stage']['description']='assess obtains query identities and bounded overview without final inclinations; commit supplies per-query decisions. A first commit can include the whole query plan.'
+        result['allOf']=[
+            {'if':{'not':{'required':['task_id']}},
+             'then':{'required':['goal','query_plan']}},
+            {'if':{'properties':{'decision_stage':{'const':'assess'}}},
+             'then':{'not':{'required':['query_decisions']}}},
+            {'if':{'properties':{'decision_stage':{'const':'commit'}}},
+             'then':{'required':['query_decisions'],'allOf':[
+                 {'if':{'required':['task_id']},
+                  'then':{'properties':{'query_decisions':query_decision_schema('id')}},
+                  'else':{'properties':{'query_decisions':query_decision_schema('index')}}}]}}]
+        return result
+    if protocol_version != VERSION:
+        raise ValueError('unknown_knowledge_decision_protocol')
     from knowledge_application import envelope_schema
     properties = deepcopy(envelope_schema()['properties'])
     properties = {k: properties[k] for k in ('action','trigger','target_event_ids','objective','expected_gain','subjective_inclination')}
@@ -146,27 +219,18 @@ def read_schema(tool):
     return result
 
 
-def validate_query_plan(plan):
-    from jsonschema import Draft202012Validator
-    if not Draft202012Validator(QUERY_PLAN_SCHEMA).is_valid(plan):
-        raise ValueError('invalid_query_plan')
-    seen=set()
-    for q in plan['queries']:
-        text=q['text']; key=(q['purpose'],text.casefold())
-        if text.strip()!=text or not plan[q['purpose']+'_need'].strip():
-            raise ValueError('query_plan_need_mismatch')
-        # Older recorded purpose/text plans remain readable; new semantic fields
-        # must form one complete route rather than silently dropping a field.
-        if 'keywords' in q or 'need' in q:
-            from knowledge_query import validate_candidate_arguments
-            validate_candidate_arguments(q['purpose'], text, q.get('keywords',''), q.get('need',''))
-        if key in seen:raise ValueError('duplicate_query_plan_text')
-        seen.add(key)
+def validate_query_plan(plan, protocol_version=VERSION):
+    from knowledge_query import validate_query_plan as validate
+    validate(plan,protocol_version)
 
 
-def prepare_begin(app, arguments):
+def validate_begin_arguments(arguments, protocol_version=VERSION):
+    """Shared discovery/call contract; ownership and execution remain host checks."""
     from jsonschema import Draft202012Validator
-    errors = list(Draft202012Validator(begin_schema()).iter_errors(arguments))
+    schema=begin_schema(protocol_version)
+    if protocol_version==QUERY_DECISION_VERSION:
+        validate_contract_schema(schema,arguments)
+    errors = [] if protocol_version==QUERY_DECISION_VERSION else list(Draft202012Validator(schema).iter_errors(arguments))
     if errors:
         if not isinstance(arguments, dict) or arguments.get('decision_stage') not in ('assess', 'commit'):
             errors = [e for e in errors if not list(e.absolute_schema_path) or list(e.absolute_schema_path)[0] != 'allOf']
@@ -179,6 +243,8 @@ def prepare_begin(app, arguments):
                 item['unexpected'] = sorted(set(e.instance) - set(e.schema.get('properties', {})))
             elif e.validator == 'not':
                 item['omit'] = e.validator_value.get('required', [])
+                if protocol_version == QUERY_DECISION_VERSION and 'anyOf' in e.validator_value:
+                    item['omit_one_of'] = [key for branch in e.validator_value['anyOf'] for key in branch.get('required',[])]
             elif e.validator == 'anyOf':
                 item['required_alternatives'] = [v['required'] for v in e.validator_value if 'required' in v]
             else:
@@ -187,9 +253,21 @@ def prepare_begin(app, arguments):
         raise ValueError('invalid_decision_parameters: '+json.dumps(
             {'argument_errors': problems, 'executed': False, 'recovery': 'correct_arguments; do not repeat unchanged'}, ensure_ascii=False))
     if 'query_plan' in arguments.get('context',{}):
+        if protocol_version==QUERY_DECISION_VERSION:
+            raise query_error('query_plan_requires_top_level_parameter',['context','query_plan'],'Move query_plan to the top level.')
         raise ValueError('query_plan_requires_top_level_parameter')
     if 'query_plan' in arguments:
-        validate_query_plan(arguments['query_plan'])
+        validate_query_plan(arguments['query_plan'],protocol_version)
+    if protocol_version==QUERY_DECISION_VERSION and arguments['decision_stage']=='commit':
+        from knowledge_query import validate_query_decisions
+        initial='task_id' not in arguments
+        validate_query_decisions(arguments['query_decisions'],plan=arguments.get('query_plan'),
+                                 reference='index' if initial else 'id',require_all=initial)
+    return deepcopy(arguments)
+
+
+def prepare_begin(app, arguments):
+    validate_begin_arguments(arguments)
     args=deepcopy(arguments);meta=args.pop('_knowledge');targets=meta['target_event_ids']
     if not meta['objective'].strip():raise ValueError('knowledge_objective_required')
     identity=json.dumps([app.context['session_id'],app.context['run_id'],app.context['configuration_sha256'],sorted(set(targets))],ensure_ascii=False)
@@ -301,7 +379,33 @@ def next_actions(access):
     return (['read'] if access['can_read'] else [])+tail
 
 
-def execution_prompt(state, remaining, parameters, access=None):
+def query_execution_view(state, remaining, parameters, access=None):
+    """Project supplied v2 host state; never create identities or grant access."""
+    budget_keys=('total_calls','total_seconds','read_seconds','probe_calls','probe_seconds','probe_characters')
+    budget={k:v for k,v in remaining.items() if k in budget_keys and type(v) in (int,float)}
+    if type(remaining.get('probe_started')) is bool:
+        budget['probe_started']=remaining['probe_started']
+    fields=('query_id','query_index','purpose','decision_state','execution_state',
+            'can_read','read_ids','next_actions')
+    rows=[{k:deepcopy(row[k]) for k in fields if k in row}
+          for row in parameters.get('query_results',[])]
+    return {'state':state,'goal':parameters['goal'],'query_plan':deepcopy(parameters.get('query_plan')),
+            'queries':rows,'budget_remaining':budget,
+            'next_actions':deepcopy((access or {}).get('next_actions',[]))}
+
+
+def execution_prompt(state, remaining, parameters, access=None, *, protocol_version=VERSION):
+    if protocol_version == QUERY_DECISION_VERSION:
+        view=query_execution_view(state,remaining,parameters,access)
+        return (guidance(protocol_version)+'\n当前任务状态：'+str(state)+
+            '\n原始目标：'+view['goal']+
+            '\n本次需求与初始查询：'+json.dumps(view['query_plan'],ensure_ascii=False,separators=(',',':'))+
+            '\n逐查询状态：'+json.dumps(view['queries'],ensure_ascii=False,separators=(',',':'))+
+            '\n当前可执行动作：'+json.dumps(view['next_actions'],ensure_ascii=False,separators=(',',':'))+
+            '\n剩余预算：'+json.dumps(view['budget_remaining'],ensure_ascii=False,separators=(',',':'))+
+            '\n追加读取前检查该查询许可和 read_seconds；时间不足时停止读取并记录原因。')
+    if protocol_version != VERSION:
+        raise ValueError('unknown_knowledge_decision_protocol')
     actions=next_actions(access) if access else []
     stage=('当前待裁决：查阅额度已用尽或未开放，使用同一 task_id 提交 commit。'
            if state=='pending_decision' and access and not access['can_read'] else
