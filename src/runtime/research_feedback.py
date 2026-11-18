@@ -48,8 +48,8 @@ def link_feedback(reports, replies, messages, *, conversation_id, cutoff,
     unresolved = []
     sent = {}
     for reply in replies:
-        if (reply['conversation_id'] != conversation_id or reply['at'] > cutoff
-                or reply['state'] != 'SUCCEEDED' or not reply.get('message_id')):
+        if (reply['conversation_id'] != conversation_id or reply['state'] != 'SUCCEEDED'
+                or not reply.get('message_id') or reply.get('at') is None or reply['at'] > cutoff):
             continue
         mid = str(reply['message_id'])
         if mid in sent:
@@ -286,12 +286,26 @@ def read_messages(database, session_id, conversation_id, *, after, before):
     return messages
 
 
+def feedback_event_index(items):
+    """One scoped follow-up per inbox event, even for plans citing multiple tasks."""
+    events={}
+    for item in items:
+        rid=item['report']['report_id']
+        for f in item.get('followups',[]):
+            key=str(f['message']['event_id'])
+            entry=events.setdefault(key,{'message':f['message'],'report_ids':[],'reply_message_ids':[]})
+            if rid not in entry['report_ids']:entry['report_ids'].append(rid)
+            for mid in f['basis']['reply_message_ids']:
+                if mid not in entry['reply_message_ids']:entry['reply_message_ids'].append(mid)
+    return events
+
+
 def collect_feedback(run_directories, database, session_id, conversation_id, *,
                      cutoff=None, feedback_window_seconds=3600):
     cutoff = time.time() if cutoff is None else cutoff
     reports, replies = runtime_materials(run_directories, conversation_id)
     from knowledge_application import Application
-    from knowledge_application_replay import review_bundle
+    from knowledge_application_replay import review_bundle,missing_decisions,query_evidence
     applications=[]
     errors=[]
     for directory in dict.fromkeys(run_directories):
@@ -346,6 +360,17 @@ def collect_feedback(run_directories, database, session_id, conversation_id, *,
     result['unresolved_replies'].extend(unresolved)
     resolved={str(r['message_id']) for item in result['items'] for r in item['replies']}
     result['unresolved_replies']=[r for r in result['unresolved_replies'] if str(r['reply'].get('message_id')) not in resolved]
+    # Each directory entry points back to one task's request/replies/feedback.
+    # Missing decisions have no task to point to; retain their actual receipts.
+    directory=[]
+    for item in result['items']:
+        if 'query_catalog' not in item:item['query_catalog']=query_evidence({},item)
+        cat=item['query_catalog']
+        directory.append({k:cat.get(k) for k in ('report_id','task_id','status','action','final_message_ids')} |
+                         {'query_count':len(cat['query_decisions']) if cat['status']!='legacy_unattributed' else None,
+                          'queries':[{k:q.get(k) for k in ('query_id','purpose','status')} for q in cat['query_decisions']]})
+    result['query_catalog']=directory+missing_decisions(result['unresolved_replies'])
+    result['feedback_events']=feedback_event_index(result['items'])
     result['collection_errors']=errors
     return result
 
@@ -410,6 +435,12 @@ def native_task_links(task_id, reports, sessions):
     return links
 
 
+def _matches_qq_scope(scope, conversation):
+    if scope=='qq:'+conversation:return True
+    account,sep,group=conversation.partition(':group:')
+    return bool(account and sep and group and scope=={'account_id':account,'group_id':group})
+
+
 def prepare_review_feedback(settings, output, *, sources=()):
     """One read-only collection path for daily and explicitly requested reviews."""
     cfg = settings.get('reading_review', {})
@@ -427,7 +458,7 @@ def prepare_review_feedback(settings, output, *, sources=()):
                 original=json.loads(Path(source).read_text(encoding='utf-8-sig'))
                 context=original.get('context',{})
                 identity=context.get('task_context',{}).get('knowledge_application') or {}
-                if context.get('audit_scope')=='qq:'+conversation and identity.get('session_id'):
+                if _matches_qq_scope(context.get('audit_scope'),conversation) and identity.get('session_id'):
                     run=identity.get('run_id')
                     if run and Path(run).is_absolute():directories.append(run)
             if feedback.get('current_run_path_file'):
@@ -451,15 +482,18 @@ def prepare_review_feedback(settings, output, *, sources=()):
 
 def attach_feedback(original, bundle, *, native_sessions_directory=None):
     """Create an audit projection; never rewrite the reading trace or user evaluation."""
+    from knowledge_application_replay import query_evidence
     result = copy.deepcopy(original)
     if bundle.get('status') in ('not_configured', 'collection_failed'):
         result['research_feedback'] = {key: bundle[key] for key in
             ('status', 'error', 'collection_file') if key in bundle}
         result['research_feedback']['items'] = []
+        result['research_feedback']['query_catalog']=query_evidence(original)
         return result
     scope = original.get('context', {}).get('audit_scope')
-    if scope != 'qq:' + bundle['conversation_id']:
+    if not _matches_qq_scope(scope,bundle['conversation_id']):
         result['research_feedback'] = {'status': 'scope_mismatch', 'items': []}
+        result['research_feedback']['query_catalog']=query_evidence(original)
         return result
     thread = original.get('native_thread_id')
     turn = original.get('native_turn_id')
@@ -486,9 +520,20 @@ def attach_feedback(original, bundle, *, native_sessions_directory=None):
         candidates = [copy.deepcopy(item) for item in bundle['items'] if item['report']['report_id'] in links]
         evidence = [link for item in candidates for link in links[item['report']['report_id']]]
     items = candidates if len(candidates) == 1 else []
+    item=items[0] if items else {}
+    prior=item.pop('query_catalog',{}) if item else {}
+    catalog=query_evidence(original,item)
+    # Join the report-local read number only within the same verified task.
+    if prior.get('task_id') and prior['task_id']==catalog['task_id']:
+        receipts={str(r['trace_read_id']):r for r in prior.get('reads',[])}
+        for read in catalog['reads']:
+            receipt=receipts.get(str(read['trace_read_id']),{})
+            if receipt.get('application_calls'):read['application_calls']=receipt['application_calls']
+            for key in ('call_id','application_read_id'):
+                if not read.get(key) and receipt.get(key):read[key]=receipt[key]
     result['research_feedback'] = dict(status='linked' if items else
         'report_identity_ambiguous' if candidates else 'report_identity_unavailable',
-        items=items, association_scope='application_task' if direct else 'native_turn', identity_evidence=evidence,
+        items=items,query_catalog=catalog, association_scope='application_task' if direct else 'native_turn', identity_evidence=evidence,
         candidate_report_ids=[i['report']['report_id'] for i in candidates],
         collection_file=bundle.get('collection_file'),
         collection_errors=copy.deepcopy(bundle.get('collection_errors',[])),
