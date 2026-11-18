@@ -16,11 +16,13 @@ def candidate_directory(sources):
   context=original.get('context',{})
   request=original.get('user_request') or context.get('goal') or ''
   feedback=original.get('research_feedback') or {}
+  decision=feedback.get('query_catalog') or {}
   result.append({'id':f'candidate-{index:03d}','source':str(Path(source).resolve()),
    'task_id':original.get('task_id'),'recorded_at':original.get('recorded_at'),
    'task_mode':context.get('task_mode'),'request_preview':str(request)[:800],
    'request_preview_truncated':len(str(request))>800,'status':original.get('status'),
-   'stop_reason':original.get('stop_reason'),'feedback_available':bool(feedback)})
+   'stop_reason':original.get('stop_reason'),'feedback_available':bool(feedback.get('items')),
+   'decision_status':decision.get('status'),'query_statuses':[q['status'] for q in decision.get('query_decisions',[])]})
  return result
 
 
@@ -36,10 +38,10 @@ def review_readings(sources,output,extend,judge,*,settings=None,select=None,now=
  folder=Path(output)/(dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')+'-'+uuid.uuid4().hex[:8]);folder.mkdir(parents=True,exist_ok=False)
  started=now();items=[];chosen=list(sources)
  selection={'status':'not_required','elapsed_seconds':0,'selected':[], 'unselected':[]}
+ catalog=candidate_directory(sources)
  if len(sources)>cfg['max_tasks']:
   selection_started=now();selection_folder=folder/'selection';selection_folder.mkdir()
   try:
-   catalog=candidate_directory(sources)
    (selection_folder/'catalog.json').write_text(json.dumps(catalog,ensure_ascii=False,indent=2),encoding='utf-8')
    if select is None:raise RuntimeError('review_selector_missing')
    selection_remaining=cfg['selection_timeout_seconds']-(now()-selection_started)
@@ -56,11 +58,11 @@ def review_readings(sources,output,extend,judge,*,settings=None,select=None,now=
    selection.update(status='selected',selected=[dict(by_id[x['id']],reason=x['reason']) for x in entries],
                     unselected=[dict(x,status='not_selected') for x in catalog if x['id'] not in ids])
   except Exception as exc:
-   chosen=[];selection.update(status='failed',error=str(exc))
+   chosen=[];selection.update(status='failed',error=str(exc),unselected=[dict(x,status='selection_failed') for x in catalog])
   selection['elapsed_seconds']=now()-selection_started
   (selection_folder/'receipt.json').write_text(json.dumps(selection,ensure_ascii=False,indent=2),encoding='utf-8')
  else:
-  selection['selected']=[{'source':str(Path(p).resolve()),'reason':'within_batch_limit'} for p in chosen]
+  selection['selected']=[dict(x,reason='within_batch_limit') for x in catalog]
  for source in chosen:
   record_started=now()
   remaining=cfg['per_record_timeout_seconds']
@@ -77,6 +79,7 @@ def review_readings(sources,output,extend,judge,*,settings=None,select=None,now=
    remaining=cfg['per_record_timeout_seconds']-(now()-record_started)
    if remaining<=0:raise TimeoutError('review_budget_exhausted')
    assessment=judge({'original':original,'extension':extension,'reads':extension.get('reads',[])},remaining)
+   if now()-record_started>cfg['per_record_timeout_seconds']:raise TimeoutError('review_budget_exhausted')
    if set(assessment['scores'])!=set(CATEGORIES) or any(v is not None and (type(v) is not int or not 0<=v<=3) for v in assessment['scores'].values()):raise ValueError('invalid_review_scores')
    for finding in assessment['findings']:
     if finding['category'] not in CATEGORIES:raise ValueError('invalid_review_category')
@@ -93,15 +96,26 @@ def review_readings(sources,output,extend,judge,*,settings=None,select=None,now=
   if source.read_bytes()!=raw:raise RuntimeError('original_record_changed')
   (dest/'review.json').write_text(json.dumps(row,ensure_ascii=False,indent=2),encoding='utf-8')
  requests=[]
+ suggestions=[]
  for index,item in enumerate(items,1):
-  for recommendation in item.get('assessment',{}).get('recommendations',[]):
-   requests.append({'id':f'review-{index}-{len(requests)+1}','status':'pending_controller_review','source':item['source'],'review':str(folder/f'task-{index:03d}'/'review.json'),'request':recommendation,'applied':False})
+  assessment=item.get('assessment',{});source={'source':item['source'],'review':str(folder/f'task-{index:03d}'/'review.json')}
+  if 'strategy_suggestions' in assessment:
+   for v in assessment['strategy_suggestions']:
+    s={**v,**source,'id':f'review-{index}-{len(requests)+1}'}
+    suggestions.append(s);requests.append({**s,'request':s['proposed_change']})
+  else:
+   for recommendation in assessment.get('recommendations',[]):
+    requests.append({**source,'id':f'review-{index}-{len(requests)+1}','status':'pending_controller_review','request':recommendation,'applied':False})
  (folder/'change-requests.json').write_text(json.dumps(requests,ensure_ascii=False,indent=2),encoding='utf-8')
+ strategy_file=folder/'strategy-suggestions.json'
+ strategy_file.write_text(json.dumps(suggestions,ensure_ascii=False,indent=2),encoding='utf-8')
  completed=sum(bool(item.get('assessment_complete')) for item in items)
  result={'directory':str(folder.resolve()),'items':items,'selection':selection,
  'counts':{'candidates':len(sources),'selected':len(chosen),'completed':completed,'incomplete':len(chosen)-completed,'unselected':len(selection['unselected'])},
+ 'assessment_status_counts':{'valid':sum(row['status']=='ok' for row in items),'failed':sum(row['status']=='error' for row in items)},
  'all_assessments_complete':bool(chosen) and completed==len(chosen),
  'status':'selection_failed' if selection['status']=='failed' else ('completed' if chosen and completed==len(chosen) else 'partial' if chosen else 'empty'),
+ 'strategy_suggestions_file':str(strategy_file.resolve()),'strategy_suggestion_count':len(suggestions),
  'parameters_applied':False,'elapsed_seconds':now()-started,'budget':cfg}
  (folder/'report.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
  return result
