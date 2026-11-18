@@ -33,6 +33,12 @@ read_review_material 默认返回字段目录，用 pointer 选择内容；正�
 预算剩余 {max(0,seconds-(time.monotonic()-started)):.1f} 秒。材料读取回执包含剩余时间。
 {response_instructions}
 '''
+    from model_input_audit import write_character_observation
+    # Full source material and the short directory prompt measure different inputs.
+    material_characters = sum(map(len, json.JSONEncoder(ensure_ascii=False).iterencode(reports)))
+    write_character_observation(root, 'review_materials', material_characters,
+                                options.get('max_input_chars', 180000),
+                                prompt_characters=len(model_prompt), delivery='progressive')
     (root/'prompt.txt').write_text(model_prompt,encoding='utf-8')
     (root/'input.json').write_text(json.dumps({'materials_directory':str(materials.root),'deadline':deadline},ensure_ascii=False,indent=2),encoding='utf-8')
     code=None;error=None

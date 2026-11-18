@@ -110,8 +110,9 @@ class CodexGraphReviewer:
         prompt = json.dumps(request, ensure_ascii=False)
         from model_input_audit import write_audit
         write_audit(folder, prompt, surface='graph_review_prompt')
-        if len(prompt) > self.config.get('max_input_characters', 32000):
-            raise ValueError('graph_review_input_budget_exceeded')
+        from model_input_audit import write_character_observation
+        write_character_observation(folder, 'graph_review_prompt', len(prompt),
+                                    self.config.get('max_input_characters', 32000))
         timeout = self.config.get('timeout_seconds', 300)
         if not 0 < timeout <= 600:
             raise ValueError('invalid_graph_review_timeout')

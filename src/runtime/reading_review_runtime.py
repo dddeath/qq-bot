@@ -35,12 +35,12 @@ def review_input(original):
 
 
 def bounded_review_payload(payload,max_chars=180000):
- # Review evidence remains complete; an oversized input is an explicit incomplete review.
+ from model_input_audit import character_observation
  if type(max_chars) is not int or max_chars<4000:raise ValueError('invalid_audit_input_budget')
  result={**payload,'audit_input_omissions':[],'audit_input_omission_count':0,
          'audit_input_policy':'All supplied text and records are retained. Source read bounds still apply.'}
  size=len(json.dumps(result,ensure_ascii=False))
- if size>max_chars:raise ValueError(f'audit_input_budget_exceeded: {size} > {max_chars}; evidence retained, review not run')
+ result['audit_input_size']=character_observation(size,max_chars)
  return result
 
 

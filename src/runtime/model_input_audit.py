@@ -60,6 +60,19 @@ def audit_input(value, *, surface, origin='runtime'):
                 skipped_nontext_blocks=skipped_images, provider_wire_verified=False)
 
 
+def character_observation(measured, reference):
+    """Characters of the named input, not provider tokens or a rejection criterion."""
+    return dict(policy='observe_only', measured_characters=measured,
+                reference_characters=reference, excess_characters=max(0, measured-reference))
+
+
+def write_character_observation(folder, surface, measured, reference, **details):
+    from pathlib import Path
+    record = dict(surface=surface, **character_observation(measured, reference), **details)
+    (Path(folder) / 'input-size.json').write_text(
+        json.dumps(record, ensure_ascii=False, indent=2), encoding='utf8')
+
+
 def write_audit(folder, value, *, surface):
     from pathlib import Path
     result = audit_input(value, surface=surface)
