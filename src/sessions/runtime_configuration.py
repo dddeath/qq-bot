@@ -77,6 +77,10 @@ def settings(config, conversation):
         'screening':copy.deepcopy(snapshot['screening']),
         'main_context':copy.deepcopy(snapshot['main_context'])}
     value['knowledge_application']=copy.deepcopy(snapshot.get('knowledge_application',{'enabled':False}))
+    from knowledge_application import snapshot_binding
+    binding=snapshot_binding(snapshot)
+    value['knowledge_application_binding']={key:binding[key] for key in
+        ('schema_version','decision_granularity','protocol_version','policy_sha256','learned_adjustment','runtime_state')}
     value['configuration']={key:snapshot[key] for key in
         ('session_id','account_id','group_id','harness','model','effort','native_session_id','bot_ref','tool_profile_ref')}
     value['configuration'].update(snapshot=entry['snapshot'],configuration_sha256=entry['sha256'],
@@ -94,7 +98,10 @@ def record_loaded(config, conversation, consumer, value, *, invocation=None, nat
         'owner_pid':os.getpid(),'configuration':copy.deepcopy(meta),
         'settings':{k:copy.deepcopy(v) for k,v in value.items() if k!='configuration'},
         'invocation':invocation,'native_session_id':native_session_id}
-    if unapplied_settings is not None:result['unapplied_settings']=list(unapplied_settings)
+    if consumer=='chat' and value.get('knowledge_application_binding',{}).get('runtime_state')=='pending_adapter':
+        result.update(status='pending_adapter',unapplied_settings=['knowledge_application.decision_granularity'])
+    if unapplied_settings is not None:
+        result['unapplied_settings']=list(dict.fromkeys([*result.get('unapplied_settings',[]),*unapplied_settings]))
     if config.get('application_id'):result['application_id']=config['application_id']
     path=root/(sha(conversation.encode())+'-'+consumer+'.json')
     if invocation is not None and path.exists():
@@ -121,7 +128,7 @@ def status(config_path):
             observed=json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
             matches=observed and observed.get('configuration',{}).get('configuration_sha256')==expected
             consumers.append({'conversation':cid,'consumer':name,'expected_configuration_sha256':expected,
-                'status':'loaded' if matches and observed.get('status')=='loaded' else 'stale' if observed else 'unknown',
+                'status':observed['status'] if matches and observed.get('status') in ('loaded','pending_adapter') else 'stale' if observed else 'unknown',
                 'observed':observed})
     count=sum(c['status']=='loaded' for c in consumers)
     return {'status':'loaded' if consumers and count==len(consumers) else 'partial' if count else 'unknown',
@@ -151,9 +158,9 @@ def chat_policy(policy, conversation):
             if key in explicit and explicit[key]!=value:
                 raise ValueError('main_context.'+key+' conflicts with fixed snapshot')
         result['main_context']={**explicit,**fixed}
-        from knowledge_application import policy as knowledge_policy
+        from knowledge_application import policy as knowledge_policy, policy_binding
         fixed=knowledge_policy(snapshot.get('knowledge_application'))
-        if 'knowledge_application' in result and knowledge_policy(result['knowledge_application'])!=fixed:
+        if 'knowledge_application' in result and policy_binding(result['knowledge_application'])!=policy_binding(fixed):
             raise ValueError('knowledge_application conflicts with fixed snapshot')
         result['knowledge_application']=fixed
     return result

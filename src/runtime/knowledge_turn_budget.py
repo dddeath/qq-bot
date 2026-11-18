@@ -50,7 +50,7 @@ class TurnBudget:
                 receipt['candidate_menu_limit'] = allowance
             return receipt
 
-    def deliver(self, turn, tool, arguments, response, elapsed, projector=None, application_call_id=None):
+    def deliver(self, turn, tool, arguments, response, elapsed, projector=None, application_call_id=None, *, upstream=None):
         """Keep raw evidence and the exact projected result separately."""
         from reading_result import model_response
         delivered = model_response(response)
@@ -93,7 +93,7 @@ class TurnBudget:
                     'text': json.dumps({'knowledge_turn_budget': receipt}, ensure_ascii=False)})
         if projector:
             delivered = projector(delivered)
-        record = dict(turn_id=turn, tool=tool, arguments=arguments, upstream=response,
+        record = dict(turn_id=turn, tool=tool, arguments=arguments, upstream=response if upstream is None else upstream,
                       delivered=delivered, elapsed_seconds=elapsed, recorded_at=time.time(),
                       budget=receipt, estimated_cost=cost)
         if application_call_id is not None:

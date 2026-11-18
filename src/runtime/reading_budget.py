@@ -56,6 +56,11 @@ class ReadBudget:
                 'seconds':max(0,min(deadline,first+policy['video_poll_timeout_seconds'])-now)}
                 for video,count,first in polls})
 
+    def overview_required(self):
+        """Project the same prerequisite used by reserve, including failed reads."""
+        with self.db() as db:
+            return db.execute('select 1 from calls where id not in (select call_id from video_polls) limit 1').fetchone() is None
+
     def reserve(self,tool,purpose,reason,arguments=None):
         if purpose not in ('targeted','explore') or not isinstance(reason,str) or not reason.strip():raise ValueError('reading_purpose_required')
         with self.db() as db:

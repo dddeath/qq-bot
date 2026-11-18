@@ -170,6 +170,7 @@ def main():
         policy = snapshot.get('knowledge_application')
         trace = ResearchTrace.for_servers({**config['reading_trace'], 'knowledge_application': policy},
                                           snapshot['servers'], index_policy=policy)
+        if application:trace.bind_application(application)
         allowed.update(CONTROL_TOOLS)
         if application:
             from knowledge_overview import decision_entry

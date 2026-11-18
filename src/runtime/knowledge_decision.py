@@ -53,6 +53,24 @@ def settings(value=None):
     return result
 
 
+def effective_limits(value, host, started_at):
+    """Freeze one task budget from policy and host bounds at its original start."""
+    limits = settings(value)
+    configured_seconds = limits['total_seconds']
+    seconds = min(configured_seconds, host.get('timeout_seconds', 300))
+    if host.get('deadline') is not None:
+        seconds = min(seconds, host['deadline'] - started_at)
+    if seconds <= 0:
+        raise ValueError('time_budget_exhausted')
+    limits['total_calls'] = min(limits['total_calls'], host.get('max_read_units', 10))
+    limits['total_seconds'] = seconds
+    if seconds != configured_seconds:
+        limits['reserve_seconds'] *= seconds / configured_seconds
+    limits['max_calls'] = min(limits['max_calls'], limits['total_calls'])
+    limits['max_seconds'] = min(limits['max_seconds'], seconds - limits['reserve_seconds'])
+    return limits
+
+
 DECISION_GUIDANCE = (
     '第一步，检查收益依据。内容收益包括结论、条件或推导的改善；表达收益包括适用于当前交流的表达方式。'
     '条目带有与当前上下文相关的有效 Tag，且其中表达可用于本次回复，即具备明确的预期表达收益；最终以实际应用核验。'
@@ -153,7 +171,10 @@ def tool_contract(protocol_version=VERSION):
             'subjective_inclination and expected_gain per query: a first commit uses query_index in its '
             'query_plan; an existing task uses returned query_id and task_id. Preserve IDs and first '
             'decisions on retry. Reading permission is returned by the host per query; reuse existing '
-            'materials and finish_reading_task when done.\n'+guidance(protocol_version))
+            'materials and finish_reading_task when done. To append a genuinely new need, assess with '
+            'task_id, the full query_plan retaining its original prefix, and context identifying the new '
+            'evidence; commit the new returned IDs separately. Up to four queries share the original budget. '
+            'Inspect runtime_state and can_read before reading.\n'+guidance(protocol_version))
     return {'name':'begin_reading_task','description':description,'inputSchema':schema}
 
 
@@ -266,8 +287,9 @@ def validate_begin_arguments(arguments, protocol_version=VERSION):
     return deepcopy(arguments)
 
 
-def prepare_begin(app, arguments):
-    validate_begin_arguments(arguments)
+def prepare_begin(app, arguments, *, protocol_version=VERSION):
+    version=protocol_version
+    validate_begin_arguments(arguments,version)
     args=deepcopy(arguments);meta=args.pop('_knowledge');targets=meta['target_event_ids']
     if not meta['objective'].strip():raise ValueError('knowledge_objective_required')
     identity=json.dumps([app.context['session_id'],app.context['run_id'],app.context['configuration_sha256'],sorted(set(targets))],ensure_ascii=False)
@@ -286,7 +308,7 @@ def prepare_begin(app, arguments):
             raise ValueError('knowledge_task_decision_mismatch')
         if prior:
             selected=json.loads(prior[0])
-            if selected.get('decision_protocol')!=VERSION:
+            if selected.get('decision_protocol')!=version:
                 raise ValueError('decision_protocol_mismatch: retain original decision_ids')
             app._validate_decision_scope(db,[ref],turn,'begin_reading_task',args)
         else:
@@ -295,11 +317,30 @@ def prepare_begin(app, arguments):
             if set(targets)-message_ids(json.loads(event)):raise ValueError('knowledge_target_not_delivered')
             if not args.get('goal'):raise ValueError('reading_goal_required')
             selected={**meta,'action':'research','turn_id':turn,'task_id':ref,
-                      'decision_protocol':VERSION,'state':'pending_decision',
+                      'decision_protocol':version,'state':'pending_decision',
                       'started_at':started,'basis':'awaiting_model_commit',
                       'task_arguments':{k:deepcopy(args[k]) for k in ('goal','context','task_mode','needs','query_plan') if k in args}}
             selected.pop('subjective_inclination',None)
             db.execute('INSERT INTO decisions VALUES (?,?,?)',(ref,turn,json.dumps(selected,ensure_ascii=False)))
+        if version==QUERY_DECISION_VERSION:
+            if not prior:
+                selected['queries']=[new_query(app,ref,i,q,meta,args.get('context',{}))
+                                     for i,q in enumerate(args['query_plan']['queries'])]
+            elif 'query_plan' in args:
+                existing=selected['task_arguments']['query_plan']['queries'];incoming=args['query_plan']['queries']
+                if len(incoming)<len(existing) or any(a['purpose']!=b['purpose'] for a,b in zip(existing,incoming)):
+                    raise query_error('query_plan_identity_conflict',['query_plan'],'Keep original query slots and purposes; rewording retains their identities.')
+                if len(incoming)>len(existing):
+                    if (args['decision_stage']!='assess' or not args.get('task_id') or not args.get('context')):
+                        raise query_error('query_addition_basis_required',['context'],'Use assess with task_id, the extended plan, and context identifying the new need or evidence.')
+                    if selected['state']=='closed' or incoming[:len(existing)]!=existing:
+                        raise query_error('query_plan_identity_conflict',['query_plan'],'Append to the unchanged plan of an open task.')
+                    selected['queries'].extend(new_query(app,ref,i,q,meta,args['context'])
+                        for i,q in enumerate(incoming) if i>=len(existing))
+                    selected['task_arguments']['query_plan']=deepcopy(args['query_plan'])
+                    selected['state']='pending_decision'
+            resolve_query_declarations(selected,args)
+            db.execute('UPDATE decisions SET body=? WHERE id=?',(json.dumps(selected,ensure_ascii=False),ref))
         args['task_id']=ref
         token=uuid.uuid4().hex
         db.execute('INSERT INTO calls VALUES (?,?,?,?,?,?,NULL)',(token,turn,'begin_reading_task',json.dumps([ref]),
@@ -307,13 +348,171 @@ def prepare_begin(app, arguments):
     return token,args
 
 
+def new_query(app, task_id, index, query, declaration, context):
+    return dict(query_id=uuid.uuid4().hex, task_id=task_id, query_index=index,
+                purpose=query['purpose'], original_query=deepcopy(query),
+                decision_state='pending', execution_state='not_started',
+                origin={'target_event_ids':deepcopy(declaration['target_event_ids']),
+                        'objective':declaration['objective'],'expected_gain':declaration['expected_gain'],
+                        'context':deepcopy(context)}, configuration_binding=app.configuration())
+
+
+def resolve_query_declarations(selected, args):
+    rows=selected['queries'];by_id={r['query_id']:r for r in rows}
+    resolved=[]
+    for index,declaration in enumerate(args.get('query_decisions',[])):
+        key=declaration.get('query_id')
+        if key is not None:
+            if key not in by_id:
+                raise query_error('query_not_in_task',['query_decisions',index,'query_id'],'Use a query_id returned for this task.')
+            row=by_id[key]
+        else:
+            i=declaration['query_index']
+            if i>=len(rows):
+                raise query_error('query_index_out_of_plan',['query_decisions',index,'query_index'],'Retain the original plan and query identities.')
+            row=rows[i]
+        resolved.append((row,declaration))
+    return sorted(resolved,key=lambda pair:pair[0]['query_index'])
+
+
+def query_task(app, task_id):
+    with closing(sqlite3.connect(app.path)) as db:
+        found=db.execute('SELECT body FROM decisions WHERE id=?',(task_id,)).fetchone()
+    if not found:raise ValueError('knowledge_task_not_linked')
+    selected=json.loads(found[0])
+    if selected.get('decision_protocol')!=QUERY_DECISION_VERSION:raise ValueError('decision_protocol_mismatch')
+    return selected
+
+
+def query_read_access(app, ledger, selected, row, tool=None):
+    from knowledge_turn_budget import TurnBudget
+    state=row['decision_state']
+    stage='pending_decision' if state=='pending' else 'decided'
+    access=ledger.read_access(tool,stage=stage)
+    reason=('reading_task_closed' if selected['state']=='closed' else
+            'query_disallows_new_reads' if state not in ('selected','pending') else access['reason'])
+    from decision_read_budget import remaining_with_disclosure, exhausted_dimensions
+    access['remaining']=remaining_with_disclosure(access['remaining'],TurnBudget(app.context['budget_path']))
+    if reason is None and 'turn_disclosure' in exhausted_dimensions(access['remaining']):
+        reason='turn_disclosure_budget_exhausted'
+    return dict(access,stage=stage,can_read=reason is None,reason=reason)
+
+
+def query_execution(app, task_id, query_id, state, *, read_id=None, reason=None):
+    with closing(sqlite3.connect(app.path,timeout=10)) as db, db:
+        db.execute('BEGIN IMMEDIATE')
+        selected=json.loads(db.execute('SELECT body FROM decisions WHERE id=?',(task_id,)).fetchone()[0])
+        row=next(q for q in selected['queries'] if q['query_id']==query_id)
+        row['execution_state']=state
+        if read_id is not None and read_id not in row.setdefault('trace_read_ids',[]):row['trace_read_ids'].append(read_id)
+        if reason is not None:row['execution_reason']=reason
+        db.execute('UPDATE decisions SET body=? WHERE id=?',(json.dumps(selected,ensure_ascii=False),task_id))
+
+
+def query_result(selected, remaining, *, app, ledger):
+    from knowledge_turn_budget import TurnBudget
+    from decision_read_budget import remaining_with_disclosure
+    remaining=remaining_with_disclosure(remaining,TurnBudget(app.context['budget_path']))
+    rows=[{key:deepcopy(row[key]) for key in ('query_id','query_index','purpose','decision_state','execution_state')}
+          | {'can_read':False,'read_ids':[],'next_actions':[]} for row in selected['queries']]
+    for public,row in zip(rows,selected['queries']):
+        access=query_read_access(app,ledger,selected,row)
+        public.update(can_read=access['can_read'],read_ids=deepcopy(row.get('read_ids',[])),
+                      next_actions=['read'] if access['can_read'] else [])
+    active=selected['state']!='closed'
+    actions=(['begin_reading_task'] if any(r['decision_state']=='pending' for r in rows) else [])+['finish_reading_task'] if active else []
+    if active and any(r['can_read'] for r in rows):actions.insert(0,'read')
+    parameters={**selected['task_arguments'],'query_results':rows}
+    result={'protocol_version':QUERY_DECISION_VERSION,'task_id':selected['task_id'],
+            'decision_id':selected.get('decision_id'),'state':selected['state'],
+            'target_event_ids':deepcopy(selected['target_event_ids']),
+            'query_plan':deepcopy(parameters['query_plan']),'queries':rows,
+            'query_plan_status':'recorded' if rows else 'no_query',
+            'selection_allows_reading':active and any(r['decision_state']=='selected' for r in rows),
+            'continue_reading':any(r['can_read'] for r in rows),'runtime_state':'ready',
+            'budget_remaining':remaining,'next_actions':actions}
+    result['execution_prompt']=execution_prompt(selected['state'],remaining,parameters,{'next_actions':actions},protocol_version=QUERY_DECISION_VERSION)
+    return result
+
+
+def intercept_queries(app, db, call, selected, trace):
+    """Persist query decisions atomically, then reconcile filesystem projections."""
+    if trace is None:raise ValueError('reading_entry_not_configured')
+    saved=json.loads(call[2]);args=saved['upstream'];ref=selected['task_id']
+    limits=effective_limits(app.context['policy'].get('decision_probe'),trace.config,selected['started_at'])
+    parameters=deepcopy(selected['task_arguments'])
+    parameters['context']={**parameters.get('context',{}),'decision_contract':{
+        'version':QUERY_DECISION_VERSION,'started_at':selected['started_at'],'limits':limits},
+        'knowledge_application':{'session_id':app.context['session_id'],'run_id':app.context['run_id'],
+                                 'target_event_ids':selected['target_event_ids']}}
+    path=str((trace.root/ref/'report.json').resolve())
+    if selected.get('task_report') and selected['task_report']!=path:raise ValueError('reading_task_binding_changed')
+    selected['task_report']=path
+    trace.begin_once(ref,parameters)
+    folder=trace.folder(ref);ledger=trace.task_budget(folder)
+    if call[0]=='begin_reading_task' and args['decision_stage']=='commit' and selected['state']!='closed':
+        from knowledge_sampling import sample as query_sample
+        from knowledge_turn_budget import TurnBudget
+        for row,declaration in resolve_query_declarations(selected,args):
+            if row['decision_state']!='pending':continue
+            row.update(subjective_inclination=declaration['subjective_inclination'],expected_gain=declaration['expected_gain'])
+            row['learned_adjustment']=0
+            row['decision_order']=sum('decision_order' in q for q in selected['queries'])
+            row['decided_at']=time.time()
+            remaining=ledger.remaining()
+            remaining['turn_disclosure_remaining']=TurnBudget(app.context['budget_path']).remaining()['remaining']
+            row['budget_at_decision']=remaining
+            reason=('time_budget_exhausted' if remaining['read_seconds']<=0 else
+                    'read_budget_exhausted' if remaining['total_calls']<=0 else
+                    'turn_disclosure_budget_exhausted' if remaining['turn_disclosure_remaining']<=0 else None)
+            if reason:
+                row.update(decision_state='not_sampled_budget_blocked',execution_state='budget_blocked',reason=reason)
+            else:
+                row['gate']=query_sample(row['subjective_inclination'],app.context['policy'],random_source=app.random_source)
+                row['decision_state']='selected' if row['gate']['retrieve'] else 'skipped_no_gain' if row['gate']['branch']=='no_gain' else 'skipped_sampled'
+        selected['decision_id']=ref
+        selected['state']='pending_decision' if any(r['decision_state']=='pending' for r in selected['queries']) else 'decided'
+        selected['selection_allows_reading']=any(r['decision_state']=='selected' for r in selected['queries'])
+        selected['basis']='query_decisions_persisted'
+    db.execute('UPDATE decisions SET body=? WHERE id=?',(json.dumps(selected,ensure_ascii=False),ref))
+    db.commit()
+    db.execute('BEGIN IMMEDIATE')
+    selected=json.loads(db.execute('SELECT body FROM decisions WHERE id=?',(ref,)).fetchone()[0])
+    # Preserve one ledger; admission selects the phase of the referenced query.
+    ledger.decide(selected['state'],any(q['decision_state']=='selected' for q in selected['queries']),
+                  finish_probe=selected['state']!='pending_decision')
+    if call[0]=='finish_reading_task':
+        db.commit()
+        if not (folder/'completion.json').exists():
+            trace.control('finish_reading_task',args)
+        db.execute('BEGIN IMMEDIATE')
+        selected=json.loads(db.execute('SELECT body FROM decisions WHERE id=?',(ref,)).fetchone()[0])
+        selected['state']='closed'
+        for row in selected['queries']:
+            if row['decision_state'] in ('selected','pending') and row['execution_state']=='not_started':row['execution_state']='cancelled'
+        db.execute('UPDATE decisions SET body=? WHERE id=?',(json.dumps(selected,ensure_ascii=False),ref))
+        db.commit();db.execute('BEGIN IMMEDIATE')
+    result=query_result(selected,ledger.remaining(),app=app,ledger=ledger);result['reused']=saved.get('reused',False)
+    if call[0]=='finish_reading_task':
+        completion=json.loads((folder/'completion.json').read_text(encoding='utf-8'))
+        result.update({key:completion[key] for key in ('stop_reason','reason','conclusion')})
+        result['exhausted_dimensions']=completion.get('exhausted_dimensions',[])
+    from research_trace import write_record
+    # Only public state goes into reports returned by finish; probability remains in Application audit.
+    write_record(folder/'decision.json',{key:deepcopy(result[key]) for key in
+        ('protocol_version','task_id','decision_id','state','queries','selection_allows_reading','runtime_state')})
+    write_record(folder/'protocol.json',{'protocol_version':QUERY_DECISION_VERSION,'execution_prompt':result['execution_prompt']})
+    context=json.loads((folder/'context.json').read_text(encoding='utf-8'))
+    context['task_context']['query_plan']=deepcopy(selected['task_arguments']['query_plan'])
+    write_record(folder/'context.json',context)
+    trace.report(folder)
+    return result
+
+
 def intercept_begin(app, db, call, selected, trace):
     if trace is None:raise ValueError('reading_entry_not_configured')
     saved=json.loads(call[2]);args=saved['upstream'];meta=saved['declaration'];ref=selected['task_id']
-    config=settings(app.context['policy'].get('decision_probe'))
-    config['total_calls']=min(config['total_calls'],trace.config.get('max_read_units',10))
-    config['total_seconds']=min(config['total_seconds'],trace.config.get('timeout_seconds',300))
-    config['reserve_seconds']=min(config['reserve_seconds'],config['total_seconds'])
+    config=effective_limits(app.context['policy'].get('decision_probe'),trace.config,selected['started_at'])
     parameters=deepcopy(selected['task_arguments'])
     parameters['context']={**parameters.get('context',{}),'decision_contract':{
         'version':VERSION,'started_at':selected['started_at'],'limits':config},
@@ -383,6 +582,8 @@ def query_execution_view(state, remaining, parameters, access=None):
     """Project supplied v2 host state; never create identities or grant access."""
     budget_keys=('total_calls','total_seconds','read_seconds','probe_calls','probe_seconds','probe_characters')
     budget={k:v for k,v in remaining.items() if k in budget_keys and type(v) in (int,float)}
+    if isinstance(remaining.get('turn_disclosure'),dict):
+        budget['turn_disclosure']=deepcopy(remaining['turn_disclosure'])
     if type(remaining.get('probe_started')) is bool:
         budget['probe_started']=remaining['probe_started']
     fields=('query_id','query_index','purpose','decision_state','execution_state',
@@ -403,7 +604,8 @@ def execution_prompt(state, remaining, parameters, access=None, *, protocol_vers
             '\n逐查询状态：'+json.dumps(view['queries'],ensure_ascii=False,separators=(',',':'))+
             '\n当前可执行动作：'+json.dumps(view['next_actions'],ensure_ascii=False,separators=(',',':'))+
             '\n剩余预算：'+json.dumps(view['budget_remaining'],ensure_ascii=False,separators=(',',':'))+
-            '\n追加读取前检查该查询许可和 read_seconds；时间不足时停止读取并记录原因。')
+            '\n追加读取前检查该查询许可、total_calls、read_seconds 和 turn_disclosure.remaining（本轮文本估算额度）。'
+            '任一读取预算用尽时停止补读，完成裁决后用 budget_exhausted 记录收尾。')
     if protocol_version != VERSION:
         raise ValueError('unknown_knowledge_decision_protocol')
     actions=next_actions(access) if access else []
@@ -440,6 +642,15 @@ class DecisionToolAccess:
                        if turn==current or json.loads(body).get('action')=='research']
         for decision in decisions:
             task=decision.get('task_id')
+            if task and decision.get('decision_protocol')==QUERY_DECISION_VERSION:
+                if decision.get('state')!='closed' and (self.trace.root/task/'context.json').exists():
+                    folder=self.trace.folder(task)
+                    if (folder/'completion.json').exists():continue
+                    names.add('finish_reading_task')
+                    ledger=self.trace.task_budget(folder)
+                    for tool in reads:
+                        if any(query_read_access(self.app,ledger,decision,row,tool)['can_read'] for row in decision['queries']):names.add(tool)
+                continue
             if not task or decision.get('decision_protocol')!=VERSION or decision.get('state')=='closed':continue
             if not (self.trace.root/task/'context.json').exists():continue
             folder=self.trace.folder(task)

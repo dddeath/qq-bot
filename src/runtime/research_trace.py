@@ -39,8 +39,24 @@ def write_record(path, value):
 class ResearchTrace:
     def __init__(self, config):
         self.config = config
+        self.application = None
         self.root = Path(config['root'])
         self.root.mkdir(parents=True, exist_ok=True)
+
+    def bind_application(self, application):
+        self.application=application
+        return self
+
+    def query_context(self, folder):
+        from knowledge_decision import QUERY_DECISION_VERSION, query_task
+        context=json.loads((folder/'context.json').read_text(encoding='utf-8'))
+        if context.get('task_context',{}).get('decision_contract',{}).get('version')!=QUERY_DECISION_VERSION:
+            return None
+        if self.application is None:raise ValueError('query_application_required')
+        if context['audit_scope']!=self.config['scope']:raise ValueError('reading_scope_mismatch')
+        selected=query_task(self.application,folder.name)
+        if selected.get('task_report')!=str((folder/'report.json').resolve()):raise ValueError('reading_task_binding_changed')
+        return selected
 
     @classmethod
     def for_servers(cls, config, servers, *, index_policy=None):
@@ -156,7 +172,12 @@ class ResearchTrace:
         return task_id
 
     def remaining(self, folder):
-        return self.task_budget(folder).remaining()
+        remaining=self.task_budget(folder).remaining()
+        if self.application is not None and self.query_mode():
+            from knowledge_turn_budget import TurnBudget
+            from decision_read_budget import remaining_with_disclosure
+            remaining=remaining_with_disclosure(remaining,TurnBudget(self.application.context['budget_path']))
+        return remaining
 
     def task_budget(self,folder):
         context=json.loads((folder/'context.json').read_text(encoding='utf-8'))
@@ -167,7 +188,13 @@ class ResearchTrace:
 
     def read_timeout(self,path):
         ledger=self.task_budget(path.parent)
-        return ledger.timeout() if hasattr(ledger,'timeout') else ledger.remaining()['read_seconds']
+        record=json.loads(path.read_text(encoding='utf-8'))
+        stage=record.get('query_read_stage')
+        seconds=(ledger.timeout(stage=stage) if stage else ledger.timeout()) if hasattr(ledger,'timeout') else ledger.remaining()['read_seconds']
+        if record['tool']=='watch_video':
+            poll=ledger.remaining().get('video_polls',{}).get(ReadBudget.video_key(record['arguments']))
+            if poll is not None:seconds=min(seconds,poll['seconds'])
+        return seconds
 
     def prepare(self, tool, arguments):
         args = dict(arguments)
@@ -186,12 +213,28 @@ class ResearchTrace:
             from knowledge_query import validate_candidate_arguments
             validate_candidate_arguments(**args)
         route = None
-        if tool in ROUTED:
+        selected=self.query_context(folder)
+        if selected is not None:
+            from knowledge_decision import query_read_access, query_execution
+            route=resolve(tool,args,purpose,selected['task_arguments']['query_plan'],query_records=selected['queries'])
+            row=selected['queries'][route['query_index']]
+            access=query_read_access(self.application,self.task_budget(folder),selected,row,tool)
+            if not access['can_read']:
+                if row['decision_state']=='selected' and access['reason']!='reading_task_closed':
+                    query_execution(self.application,folder.name,row['query_id'],'budget_blocked',reason=access['reason'])
+                raise ValueError(access['reason'])
+        elif tool in ROUTED:
             context=json.loads((folder/'context.json').read_text(encoding='utf8'))
             route=resolve(tool,args,purpose,context['task_context'].get('query_plan'),context.get('needs',[]))
         before = self.remaining(folder)
         ledger=self.task_budget(folder)
-        index = ledger.reserve(tool, purpose.get('purpose'), purpose.get('reason'), args)
+        try:
+            index = ledger.reserve(tool, purpose.get('purpose'), purpose.get('reason'), args,
+                                   **({'stage':access['stage'],'video_policy':{'max_calls':10,'timeout_seconds':180}} if selected is not None else {}))
+        except ValueError as exc:
+            if selected is not None and row['decision_state']=='selected':
+                query_execution(self.application,folder.name,row['query_id'],'budget_blocked',reason=str(exc))
+            raise
         record = dict(read_id=index, tool=tool, arguments=args,
                       action={'kind': tool, 'purpose': purpose['purpose']},
                       purpose_record={'question': purpose['reason'], 'relation_reason': relation,
@@ -200,6 +243,11 @@ class ResearchTrace:
                       budget_before=before, started_at=time.time(),
                       result={'status': 'pending', 'images': []})
         if route is not None:record['query_route']=route
+        if selected is not None:
+            from knowledge_turn_budget import TurnBudget
+            record['query_read_stage']=access['stage']
+            record['delivery_turn_id']=TurnBudget(self.application.context['budget_path']).current()
+            query_execution(self.application,folder.name,route['query_id'],'running',read_id=str(index))
         if hasattr(ledger,'state'):record['decision_state']=ledger.state()[0]
         path = folder / f'read-{index:03d}.json'
         write_record(path, record)
@@ -227,6 +275,10 @@ class ResearchTrace:
             image = path.with_name(path.stem + f'-{n}.{extension}')
             image.write_bytes(base64.b64decode(item['data'], validate=True))
             record['result']['images'].append({'path': str(image), 'mime_type': item.get('mimeType')})
+        if self.query_context(path.parent) is not None:
+            from knowledge_decision import query_execution
+            query_execution(self.application,path.parent.name,record['query_route']['query_id'],
+                            'failed' if record['result']['status']=='error' else 'completed',read_id=str(record['read_id']))
         record.update(finished_at=time.time(), elapsed_seconds=elapsed,
                       budget_remaining=self.remaining(path.parent))
         write_record(path, record)
@@ -265,7 +317,11 @@ class ResearchTrace:
     def complete_and_deliver(self, path, response, elapsed):
         """Record the upstream response before constructing the caller's projection."""
         self.complete(path, response, elapsed)
-        return self.delivery(path, response)
+        budget=None
+        if self.query_context(path.parent) is not None:
+            from knowledge_turn_budget import TurnBudget
+            budget=TurnBudget(self.application.context['budget_path'])
+        return self.delivery(path, response,turn_budget=budget,elapsed=elapsed)
 
     def evidence_reference(self, path):
         """Locate an executed read using the executor's own task and read IDs."""
@@ -273,17 +329,51 @@ class ResearchTrace:
         return {'kind':'research_task','task_id':path.parent.name,
                 'path':str(path.parent/'report.json'),'read_id':record['read_id'],'read_path':str(path)}
 
-    def delivery(self, path, response):
+    def delivery(self, path, response, *, turn_budget=None, elapsed=0, upstream=None):
         """Persist the same bounded result and budget receipt sent to the caller."""
         from reading_result import model_response
         response = model_response(response)
+        turn_receipt=None
+        for block in response.get('result',{}).get('content',[]):
+            if block.get('type')=='text':
+                try: turn_receipt=json.loads(block['text']).get('knowledge_turn_budget',turn_receipt)
+                except (ValueError,AttributeError):pass
         record = json.loads(path.read_text(encoding='utf-8'))
         ledger=self.task_budget(path.parent)
         if hasattr(ledger,'disclose'):
             from reading_result import body_of
             raw=body_of(response)
             failed=bool(response.get('error') or response.get('result',{}).get('isError') or raw.get('error'))
-            material,coverage=ledger.disclose(record['read_id'],None if failed else raw)
+            charged_response=None
+            def deliver_material(material):
+                nonlocal charged_response,turn_receipt
+                from copy import deepcopy
+                projected=deepcopy(response)
+                if material is None and not failed:
+                    missing={'error':'probe_material_does_not_fit: commit with existing evidence','material':None}
+                    projected['result']={'isError':True,'structuredContent':missing,
+                        'content':[{'type':'text','text':json.dumps(missing,ensure_ascii=False)}]}
+                elif not failed:
+                    images=[b for b in projected.get('result',{}).get('content',[]) if b.get('type')=='image']
+                    projected['result']={'structuredContent':material,
+                        'content':[{'type':'text','text':json.dumps(material,ensure_ascii=False)},*images]}
+                charged_response=turn_budget.deliver(record.get('delivery_turn_id',turn_budget.current()),
+                    record['tool'],record['arguments'],projected,elapsed,upstream=response if upstream is None else upstream)
+                charged_body=body_of(charged_response)
+                turn_receipt=charged_body.get('knowledge_turn_budget')
+                for block in charged_response.get('result',{}).get('content',[]):
+                    if block.get('type')=='text':
+                        try:turn_receipt=json.loads(block['text']).get('knowledge_turn_budget',turn_receipt)
+                        except (ValueError,AttributeError):pass
+                if charged_response.get('error') or charged_response.get('result',{}).get('isError') or charged_body.get('error'):
+                    return None
+                return charged_body
+            material,coverage=ledger.disclose(record['read_id'],None if failed else raw,
+                deliver=deliver_material if turn_budget is not None else None)
+            if charged_response is not None:
+                response=charged_response
+                raw=body_of(response)
+                failed=bool(response.get('error') or response.get('result',{}).get('isError') or raw.get('error'))
             # Only the current delivery is model-visible. The recorded upstream
             # response may contain material rejected by the disclosure budget.
             current_text='\n'.join(block.get('text','') for block in response.get('result',{}).get('content',[]) if block.get('type')=='text')
@@ -294,11 +384,24 @@ class ResearchTrace:
             value={'task_id':path.parent.name,'read_id':str(record['read_id']),
                    'status':'error' if failed else 'partial' if not coverage['complete'] else 'ok',
                    'material':material,'coverage':{k:coverage[k] for k in ('complete','next_offset')},
-                   'budget_remaining':ledger.remaining(),'error':error}
+                   'budget_remaining':self.remaining(path.parent),'error':error}
+            if turn_receipt is not None:value['knowledge_turn_budget']=turn_receipt
             images=[block for block in response.get('result',{}).get('content',[]) if block.get('type')=='image']
             response={'jsonrpc':response.get('jsonrpc','2.0'),'id':response.get('id'),'result':{
                 'content':[{'type':'text','text':json.dumps(value,ensure_ascii=False)},*images],
                 'structuredContent':value,'isError':failed}}
+            if self.query_context(path.parent) is not None:
+                from knowledge_decision import query_execution
+                value['query_id']=record['query_route']['query_id']
+                value['query_index']=record['query_route']['query_index']
+                if failed or material is None:
+                    response['result']['content']=response['result']['content'][:1]
+                    response['result']['isError']=True
+                    value['status']='error'
+                state=('budget_blocked' if error and ('budget' in error or 'turn_changed' in error or 'does_not_fit' in error) else
+                       'failed' if error else 'completed')
+                query_execution(self.application,path.parent.name,value['query_id'],state,reason=error)
+                response['result']['content'][0]['text']=json.dumps(value,ensure_ascii=False)
             record['disclosure']=coverage
             write_record(path,record);self.record_delivery(path,response)
             return response
@@ -361,12 +464,15 @@ class ResearchTrace:
         ledger=self.task_budget(folder)
         if hasattr(ledger,'state') and ledger.state()[0]=='pending_decision' and stop_reason!='cancelled':
             raise ValueError('knowledge_decision_pending: commit or cancel')
-        exhausted=(remaining['total_calls']==0 or remaining['read_seconds']<=0 or remaining['total_seconds']<=0) if 'total_calls' in remaining else reading_budget_exhausted(remaining)
+        from decision_read_budget import exhausted_dimensions
+        dimensions=exhausted_dimensions(remaining) if 'total_calls' in remaining else []
+        exhausted=bool(dimensions) if 'total_calls' in remaining else reading_budget_exhausted(remaining)
         if stop_reason == 'budget_exhausted' and not exhausted:
             raise ValueError('budget_not_exhausted: '+json.dumps(remaining))
         completion = dict(stop_reason=stop_reason, reason=reason, conclusion=conclusion,
-                          basis=basis, budget_remaining=self.remaining(folder),
+                          basis=basis, budget_remaining=remaining,
                           timestamp=time.time())
+        if self.query_mode():completion['exhausted_dimensions']=dimensions
         with (folder / 'completion.json').open('x', encoding='utf-8') as out:
             json.dump(completion, out, ensure_ascii=False)
         if hasattr(ledger,'decide'):
@@ -396,12 +502,36 @@ class ResearchTrace:
         if plan:
             report['query_routes']=[dict(q,query_index=i,read_ids=[r['read_id'] for r in reads
                 if r.get('query_route',{}).get('query_index')==i]) for i,q in enumerate(plan['queries'])]
+        if self.application is not None and (folder/'decision.json').exists() and self.query_context(folder) is not None:
+            from knowledge_decision import query_result
+            selected=self.query_context(folder)
+            public=query_result(selected,self.remaining(folder),app=self.application,ledger=self.task_budget(folder))
+            report['queries']=public['queries']
+            for row,query in zip(report.get('query_routes',[]),selected['queries']):row['query_id']=query['query_id']
         if (folder/'decision.json').exists():report['knowledge_decision']=json.loads((folder/'decision.json').read_text(encoding='utf-8'))
         # Separate proxies may finish reads concurrently; each evidence file remains authoritative.
         write_record(folder / 'report.json', report)
         return report
 
-    def schemas(self, tools, *, require_context=True):
+    def query_mode(self):
+        policy=self.application.context['policy'] if self.application else self.config.get('knowledge_application',{})
+        return policy.get('decision_granularity')=='query'
+
+    @staticmethod
+    def query_reference_schema(schema):
+        schema['properties'].update(query_id={'type':'string','minLength':1,
+            'description':'Stable query_id returned for this task. Reuse it for candidate, body, web and video reads.'},
+            query_index={'type':'integer','minimum':0,'description':'Compatibility index into the frozen plan; if query_id is also supplied they must identify the same query.'})
+        schema['anyOf']=[{'required':['query_id']},{'required':['query_index']}]
+        return schema
+
+    def schemas(self, tools, *, require_context=True, task_id=None):
+        # Unbound chat proxies retain their shared schema. A bound research
+        # gateway advertises selectors only for its own frozen plan.
+        has_plan = True
+        if task_id is not None:
+            context=json.loads((self.folder(task_id)/'context.json').read_text(encoding='utf-8'))
+            has_plan=bool(context.get('task_context',{}).get('query_plan'))
         result = []
         for tool in tools:
             tool = json.loads(json.dumps(tool))
@@ -413,15 +543,19 @@ class ResearchTrace:
                     'prior_observation': {'type': 'string', 'description': 'Optional actual prior observation that motivates this follow-up.'}},
                 'required': ['task_id', 'purpose', 'reason', 'relation'], 'additionalProperties': False}
             from knowledge_query import ROUTED
-            if tool['name'] in ROUTED:
+            if tool['name'] in ROUTED and has_plan:
                 schema['properties']['_reading']['properties']['query_index']={'type':'integer','minimum':0,
                     'description':'0-based index in this task’s query_plan. Use for tag-only searches, reworded queries and page reads when the plan has multiple queries.'}
+            if self.query_mode():
+                self.query_reference_schema(schema['properties']['_reading'])
+                tool['description']=tool.get('description','')+' Every read uses the task’s query_id and current permission; pending queries have only bounded local overview access. All queries share one task budget.'
             if require_context:
                 schema['required'] = list(dict.fromkeys(schema.get('required', []) + ['_reading']))
             else:
                 tool['description'] = tool.get('description', '') + ' 普通聊天按需读取可省略 _reading；检索任务须填写生成协议中的 _reading，使用任务独立预算并记录轨迹。'
             if tool['name']=='watch_video':
-                tool['description'] = tool.get('description','') + ' 检索任务中，首次准备与后续查询每视频共最多10次、从首次准备起最多180秒，且受任务总时间限制；不占定向/探索补读次数。超限时保留未就绪状态，用已有材料收尾。'
+                counting=('每次准备或查询计入所有查询共享的总调用额度。' if self.query_mode() else '不占定向/探索补读次数。')
+                tool['description'] = tool.get('description','') + ' 检索任务中，首次准备与后续查询每视频共最多10次、从首次准备起最多180秒，且受任务总时间限制；'+counting+'超限时保留未就绪状态，用已有材料收尾。'
             result.append(tool)
         for name, description, fields, required in [
             ('begin_reading_task', 'Generate execution_prompt from the original goal, context, mode and budget. Pass the returned prompt unchanged to the research session; retain task_id.',
@@ -447,6 +581,7 @@ class ResearchTrace:
                 'native_input':{'type':'string', 'description': 'Original exec source for a native web read. Execute the returned native_input verbatim to preserve call association.'},'purpose':{'type':'string','enum':['targeted','explore'], 'description': 'targeted addresses the task goal; explore checks unexpanded material. Classify by purpose, not tool type.'},
                 'reason':{'type':'string', 'description': 'Short factual basis for this action or stopping reason.'},'relation':{'type':'string', 'description': 'How this read relates to the original goal or learning topic; exploration may be unrelated, state that explicitly.'}},
             'required':['task_id','native_tool','native_input','purpose','reason','relation'],'additionalProperties':False}))
+        if self.query_mode():self.query_reference_schema(result[-1]['inputSchema'])
         return result
 
     def validate_control(self, name, arguments, *, schema=None):

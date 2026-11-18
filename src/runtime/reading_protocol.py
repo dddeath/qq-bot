@@ -2,19 +2,21 @@
 import json
 import math
 
-VERSION = 'reading-v8'
+VERSION = 'reading-v10'
 
 def generate(task_id, context):
     contract=context.get('task_context',{}).get('decision_contract')
     if contract:
         from knowledge_decision import VERSION as decision_version, execution_prompt
+        decision_version=contract.get('version',decision_version)
         limits=contract['limits']
         return {'protocol_version':decision_version,'execution_prompt':execution_prompt('pending_decision',{
             'total_calls':limits['total_calls'],'total_seconds':limits['total_seconds'],
             'read_seconds':limits['total_seconds']-limits['reserve_seconds'],
             'probe_calls':limits['max_calls'],'probe_seconds':limits['max_seconds'],
             'probe_characters':limits['max_characters'],'probe_started':False},
-            {'goal':context['goal'],'query_plan':context.get('task_context',{}).get('query_plan')})}
+            {'goal':context['goal'],'query_plan':context.get('task_context',{}).get('query_plan')},
+            protocol_version=decision_version)}
     budget = context['budget']
     policy = dict(overview_limit=3, max_read_units=budget['max_read_units'],
                   exploration_limit=math.ceil(budget['max_read_units']*budget['exploration_budget_ratio']),
@@ -26,6 +28,9 @@ def generate(task_id, context):
     task = {'task_id':task_id,'task_mode':context['task_mode'],'goal':context['goal'],
             'context':context.get('task_context',{}),'needs':context.get('needs',[]),'video':context['video'],'budget_policy':policy,
             'knowledge_index':context.get('knowledge_index','')}
+    planned=bool(context.get('task_context',{}).get('query_plan'))
+    task['query_routing']={'mode':'planned' if planned else 'unplanned',
+        'reference_fields':['query_index'] if planned else []}
     role = ('直接回答用户原请求，返回结论、依据和仍缺材料。' if context['task_mode']=='reading' else
             '依据目标和用户评价原文核对材料，返回新信息、评审意见和仍缺材料。')
     if context.get('task_context', {}).get('entry') == 'daily_video_learning':
@@ -38,9 +43,10 @@ def generate(task_id, context):
     from knowledge_tools import guidance
     application=context.get('knowledge_application')
     knowledge_guidance = guidance(context.get('knowledge_protocol', 'legacy'),application,context.get('knowledge_semantic',False))
-    if context.get('knowledge_semantic'):
-        from knowledge_query import query_guidance
-        knowledge_guidance += '\n'+query_guidance()
+    knowledge_guidance += '\n任务已创建，沿用返回的 task_id 读取和收尾，不重新创建任务。'
+    knowledge_guidance += ('本任务含 query_plan，读取使用本任务的 query_index。' if planned else
+        '本任务没有 query_plan；直接填写查询参数，_reading 不带 query_index 或 query_id。历史报告中的计划和编号只属于原任务。')
+    knowledge_guidance += '先通过当前工具目录中的概览工具读取本轮候选或基础资料，再按更新后的目录展开正文；历史报告不计作本轮概览。'
     from knowledge_application import policy as application_policy
     selected=application_policy(application)
     preference=selected['enabled'] and selected['strategy']=='gain'

@@ -15,6 +15,8 @@ BASELINE_PROTOCOL_VERSION = 'knowledge-application-v1'
 POLICY_SCHEMA = {'type': 'object', 'properties': {
     'enabled': {'type': 'boolean'},
     'strategy': {'type': 'string', 'enum': ['baseline', 'gain']},
+    'decision_granularity': {'type': 'string', 'enum': ['task', 'query'], 'default': 'task',
+        'description': 'Fixed decision scope. query requires gain strategy; existing tasks keep their creation policy.'},
     'gain_inclination': {'type': 'number', 'minimum': 0, 'maximum': 1, 'default': 0.5},
     'gain_adjustment_limit': {'type': 'number', 'minimum': 0, 'maximum': 1, 'default': 0.15},
     'decision_probe': PROBE_SCHEMA},
@@ -23,18 +25,53 @@ POLICY_SCHEMA = {'type': 'object', 'properties': {
 
 def policy(value=None):
     value = {} if value is None else value
-    if (not isinstance(value, dict) or set(value)-{'enabled', 'strategy', 'gain_inclination', 'gain_adjustment_limit','decision_probe'}
+    if (not isinstance(value, dict) or set(value)-{'enabled', 'strategy', 'gain_inclination', 'gain_adjustment_limit','decision_probe','decision_granularity'}
             or type(value.get('enabled', False)) is not bool
+            or value.get('decision_granularity', 'task') not in ('task', 'query')
             or value.get('strategy', 'baseline') not in ('baseline', 'gain')):
         raise ValueError('invalid_knowledge_application_policy')
     inclination = unit_value(value.get('gain_inclination', 0.5), 'gain_inclination')
     limit = unit_value(value.get('gain_adjustment_limit', 0.15), 'gain_adjustment_limit')
     result = {'enabled': value.get('enabled', False), 'strategy': value.get('strategy', 'baseline'),
               'gain_inclination': inclination, 'gain_adjustment_limit': limit}
+    # Keep legacy normalized records byte-compatible when the field was omitted.
+    if 'decision_granularity' in value:
+        result['decision_granularity'] = value['decision_granularity']
+    if result.get('decision_granularity') == 'query':
+        if result['strategy'] != 'gain':
+            raise ValueError('query_decision_requires_gain_policy')
+        result['decision_probe'] = probe_settings(value.get('decision_probe'))
     if 'decision_probe' in value:
         if result['strategy']!='gain':raise ValueError('decision_probe_requires_gain_policy')
         result['decision_probe']=probe_settings(value['decision_probe'])
     return result
+
+
+def policy_binding(value=None):
+    """Host-only identity and readiness for a fixed policy, not a model input."""
+    selected = policy(value)
+    granularity = selected.get('decision_granularity', 'task')
+    from knowledge_decision import VERSION, QUERY_DECISION_VERSION
+    version = (QUERY_DECISION_VERSION if granularity == 'query' else VERSION
+               if 'decision_probe' in selected else PROTOCOL_VERSION
+               if selected['strategy'] == 'gain' else BASELINE_PROTOCOL_VERSION)
+    canonical = {**selected, 'decision_granularity': granularity}
+    if selected['strategy']=='baseline':
+        canonical.pop('gain_adjustment_limit')
+    return dict(schema_version=1, decision_granularity=granularity, protocol_version=version,
+                policy_sha256=hashlib.sha256(json.dumps(canonical, sort_keys=True, ensure_ascii=False).encode()).hexdigest(),
+                learned_adjustment=0, runtime_state='disabled' if not selected['enabled'] else
+                'pending_adapter' if granularity == 'query' else 'ready')
+
+
+def snapshot_binding(snapshot, run_id=None):
+    binding = policy_binding(snapshot.get('knowledge_application'))
+    declared = snapshot.get('knowledge_application_binding')
+    if declared is not None and declared != binding:
+        raise ValueError('knowledge_application_binding_mismatch')
+    return {**binding, 'session_id':snapshot['session_id'], 'run_id':run_id,
+            'bot_ref':deepcopy(snapshot['bot_ref']),
+            'configuration_sha256':hashlib.sha256(json.dumps(snapshot,sort_keys=True,ensure_ascii=False).encode()).hexdigest()}
 
 
 def inclination_guidance(value=None):
@@ -59,6 +96,9 @@ def protocol(value=None):
     selected = policy(value)
     if not selected['enabled']:
         return ''
+    if selected.get('decision_granularity')=='query':
+        from knowledge_decision import guidance, QUERY_DECISION_VERSION
+        return guidance(QUERY_DECISION_VERSION)
     if 'decision_probe' in selected:
         from knowledge_decision import guidance
         return guidance()
@@ -133,8 +173,9 @@ def message_ids(event):
 
 class Application:
     """One Run's scope and decisions; material remains in existing evidence stores."""
-    def __init__(self, path):
+    def __init__(self, path, *, random_source=None):
         self.path = str(path)
+        self.random_source = random_source
         with closing(sqlite3.connect(Path(self.path).resolve().as_uri()+'?mode=ro', uri=True)) as db:
             self.context = json.loads(db.execute('SELECT body FROM context').fetchone()[0])
 
@@ -146,13 +187,19 @@ class Application:
         receipt=load(receipt_path) if receipt_path.exists() else {}
         if receipt.get('session_id') is not None and receipt['session_id']!=snapshot['session_id']:
             raise ValueError('application_run_session_mismatch')
+        binding = snapshot_binding(snapshot, receipt.get('run_id'))
+        before = receipt.get('configuration',{}).get('knowledge_application_binding')
+        if before is not None and before != binding:
+            raise ValueError('application_run_configuration_conflict')
         namespace=PROTOCOL_VERSION if policy(snapshot.get('knowledge_application'))['strategy']=='gain' else ''
         fingerprint=hashlib.sha256((namespace+json.dumps(snapshot,sort_keys=True,ensure_ascii=False)).encode()).hexdigest()
-        return cls.create(directory/'knowledge-application'/fingerprint[:16]/'application.sqlite3',snapshot,
+        app = cls.create(directory/'knowledge-application'/fingerprint[:16]/'application.sqlite3',snapshot,
             run_id=receipt.get('run_id'),budget_path=directory/'knowledge-budget.sqlite3')
+        return app
 
     @classmethod
-    def create(cls, path, snapshot, *, run_id, budget_path):
+    def create(cls, path, snapshot, *, run_id, budget_path, random_source=None):
+        snapshot_binding(snapshot, run_id)
         selected = policy(snapshot.get('knowledge_application'))
         if not selected['enabled']:
             raise ValueError('knowledge_application_not_enabled')
@@ -177,7 +224,13 @@ class Application:
             db.execute('CREATE TABLE IF NOT EXISTS current(slot INTEGER PRIMARY KEY, turn_id TEXT)')
             db.execute('CREATE TABLE IF NOT EXISTS decisions(id TEXT PRIMARY KEY, turn_id TEXT, body TEXT)')
             db.execute('CREATE TABLE IF NOT EXISTS calls(id TEXT PRIMARY KEY, turn_id TEXT, tool TEXT, refs TEXT, arguments TEXT, started REAL, observation TEXT)')
-        return cls(path)
+        return cls(path, random_source=random_source)
+
+    def configuration(self):
+        """Read the actual persisted policy binding for Run/MCP host auditing."""
+        return {**policy_binding(self.context['policy']),
+                **{key:deepcopy(self.context[key]) for key in
+                   ('session_id','run_id','bot_ref','configuration_sha256')}}
 
     def begin_turn(self, turn_id, event):
         with closing(sqlite3.connect(self.path)) as db, db:
@@ -197,9 +250,9 @@ class Application:
         result = deepcopy(tools)
         for tool in result:
             if self.gated and 'decision_probe' in self.context['policy'] and tool['name']=='begin_reading_task':
-                from knowledge_decision import begin_schema, TOOL_DESCRIPTION
-                tool['inputSchema']=begin_schema()
-                tool['description']=TOOL_DESCRIPTION
+                from knowledge_decision import tool_contract, VERSION, QUERY_DECISION_VERSION
+                version=QUERY_DECISION_VERSION if self.context['policy'].get('decision_granularity')=='query' else VERSION
+                tool.update(tool_contract(version))
                 continue
             if tool['name'] in names:
                 if self.gated and tool['name'] in ALL_TOOLS:
@@ -264,8 +317,11 @@ class Application:
     def prepare(self, tool, arguments):
         from knowledge_tools import ALL_TOOLS
         if self.gated and tool=='begin_reading_task' and ('decision_stage' in arguments or 'decision_probe' in self.context['policy']):
-            from knowledge_decision import prepare_begin
-            return prepare_begin(self,arguments)
+            from knowledge_decision import prepare_begin, VERSION, QUERY_DECISION_VERSION
+            version=QUERY_DECISION_VERSION if self.context['policy'].get('decision_granularity')=='query' else VERSION
+            token,args=prepare_begin(self,arguments,protocol_version=version)
+            self._record_configuration(token)
+            return token,args
         if self.gated and 'decision_probe' in self.context['policy'] and tool=='plan_chat_reply' and 'decision_ids' not in (arguments.get('_knowledge') or {}):
             raise ValueError('knowledge_entry_required: begin_reading_task')
         args = deepcopy(arguments)
@@ -280,6 +336,8 @@ class Application:
         if not applicable:
             if meta is not None: raise ValueError('knowledge_metadata_not_supported')
             return None, args
+        if self.context['policy'].get('decision_granularity')=='query' and '_reading' in args and not isinstance(args['_reading'],dict):
+            raise ValueError('invalid_reading: expected an object')
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT turn_id FROM current WHERE slot=1').fetchone()
@@ -382,6 +440,12 @@ class Application:
             if task_refs:
                 if refs and refs!=task_refs:raise ValueError('knowledge_task_decision_mismatch')
                 refs=task_refs
+            if self.context['policy'].get('decision_granularity')=='query' and ('_reading' in args or tool=='declare_native_read'):
+                if not task_refs:raise ValueError('knowledge_task_not_linked')
+                from knowledge_query import resolve
+                selected=json.loads(db.execute('SELECT body FROM decisions WHERE id=?',(task_refs[0],)).fetchone()[0])
+                meta_read=args if tool=='declare_native_read' else args['_reading']
+                resolve(tool,args,meta_read,selected['task_arguments']['query_plan'],query_records=selected['queries'])
             if self.gated:
                 if refs:self._validate_decision_scope(db,refs,turn,tool,args)
                 for ref in refs:
@@ -405,19 +469,42 @@ class Application:
             token = uuid.uuid4().hex
             db.execute('INSERT INTO calls VALUES (?,?,?,?,?,?,NULL)',
                 (token,turn,tool,json.dumps(refs),json.dumps({'upstream':args,'declaration':meta},ensure_ascii=False),time.time()))
+        self._record_configuration(token)
         return token, args
+
+    def _record_configuration(self, token):
+        binding=self.configuration()
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute('SELECT refs FROM calls WHERE id=?',(token,)).fetchone()
+            for ref in json.loads(row[0]):
+                body=json.loads(db.execute('SELECT body FROM decisions WHERE id=?',(ref,)).fetchone()[0])
+                if 'configuration_binding' not in body:
+                    body['configuration_binding']=binding
+                    db.execute('UPDATE decisions SET body=? WHERE id=?',(json.dumps(body,ensure_ascii=False),ref))
 
     def intercept(self, token, arguments, trace=None):
         """Return a host decision instead of calling upstream when a read/plan must wait."""
+        if trace is not None:trace.bind_application(self)
         if not self.gated or token is None:
             return None
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute('BEGIN IMMEDIATE')
             call=db.execute('SELECT tool,refs,arguments FROM calls WHERE id=?',(token,)).fetchone()
             refs=json.loads(call[1])
-            if not refs or call[0] not in ('begin_reading_task','plan_chat_reply'):
+            if not refs or call[0] not in ('begin_reading_task','plan_chat_reply','finish_reading_task'):
                 return None
             decisions=[json.loads(db.execute('SELECT body FROM decisions WHERE id=?',(ref,)).fetchone()[0]) for ref in refs]
+            from knowledge_decision import QUERY_DECISION_VERSION, intercept_queries
+            query_decisions=[d for d in decisions if d.get('decision_protocol')==QUERY_DECISION_VERSION]
+            if call[0]=='plan_chat_reply' and query_decisions:
+                if (json.loads(call[2]).get('declaration') or {}).get('phase')=='acknowledgement':return None
+                unfinished=[d['task_id'] for d in query_decisions if d['state']!='closed']
+                if unfinished:return {'next_action':'finish_reading_task','task_ids':unfinished,'decision_ids':refs}
+                if len(query_decisions)==len(decisions):return None
+            if call[0] in ('begin_reading_task','finish_reading_task') and decisions[0].get('decision_protocol')==QUERY_DECISION_VERSION:
+                return intercept_queries(self,db,call,decisions[0],trace)
+            if call[0]=='finish_reading_task':return None
             if call[0]=='begin_reading_task' and decisions[0].get('decision_protocol'):
                 from knowledge_decision import intercept_begin
                 return intercept_begin(self,db,call,decisions[0],trace)
@@ -511,6 +598,15 @@ class Application:
             if not failed and ('material' not in body or body['material'] is not None) and (row[3] in ALL_TOOLS | {'read_research_report'}
                                or '_reading' in json.loads(row[4])['upstream']):
                 observation['read_id']=token
+                reading=json.loads(row[4])['upstream'].get('_reading') or {}
+                if reading.get('query_id'):
+                    for ref in json.loads(row[1]):
+                        selected=json.loads(db.execute('SELECT body FROM decisions WHERE id=?',(ref,)).fetchone()[0])
+                        from knowledge_query import QUERY_DECISION_VERSION
+                        if selected.get('decision_protocol')==QUERY_DECISION_VERSION:
+                            query=next(q for q in selected['queries'] if q['query_id']==reading['query_id'])
+                            if token not in query.setdefault('read_ids',[]):query['read_ids'].append(token)
+                            db.execute('UPDATE decisions SET body=? WHERE id=?',(json.dumps(selected,ensure_ascii=False),ref))
             db.execute('UPDATE calls SET observation=? WHERE id=?',(json.dumps(observation,ensure_ascii=False),token))
         receipt=dict(protocol_version=self.context['protocol_version'],turn_id=row[0],call_id=token,
             decision_ids=public_refs,status=observation['status'],

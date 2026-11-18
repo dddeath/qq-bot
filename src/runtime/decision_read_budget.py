@@ -10,6 +10,17 @@ def characters(material):
     return len(json.dumps(material,ensure_ascii=False,separators=(',',':')))
 
 
+def remaining_with_disclosure(remaining, turn_budget):
+    return {**remaining, 'turn_disclosure': {
+        **turn_budget.remaining(), 'unit': 'estimated_tokens'}}
+
+
+def exhausted_dimensions(remaining):
+    return [key for key in ('total_seconds', 'read_seconds', 'total_calls')
+            if remaining.get(key, 1) <= 0] + (
+        ['turn_disclosure'] if remaining.get('turn_disclosure', {}).get('remaining', 1) <= 0 else [])
+
+
 class DecisionReadBudget:
     def __init__(self,path,contract=None):
         self.path=str(path)
@@ -36,23 +47,31 @@ class DecisionReadBudget:
         now=time.time();seconds=max(0,deadline-now)
         read_seconds=max(0,seconds-limits['reserve_seconds'])
         probe_seconds=max(0,limits['max_seconds'] if probe_at is None else probe_at+limits['max_seconds']-(probe_end or now))
-        return dict(total_calls=max(0,limits['total_calls']-count),total_seconds=seconds,
+        result = dict(total_calls=max(0,limits['total_calls']-count),total_seconds=seconds,
                     read_seconds=read_seconds,probe_calls=max(0,limits['max_calls']-probes),
                     probe_seconds=min(read_seconds,probe_seconds) if state=='pending_decision' else probe_seconds,
                     probe_characters=max(0,limits['max_characters']-chars),probe_started=probe_at is not None)
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='decision_video_polls'").fetchone():
+            result['video_polls']={video:{'calls':max(0,cap-n),'seconds':max(0,min(deadline,first+seconds)-now)}
+                for video,n,first,cap,seconds in db.execute('SELECT video,count(*),min(at),min(cap),min(seconds) FROM decision_video_polls GROUP BY video')}
+        return result
 
     def remaining(self):
         with self.db() as db:return self._remaining(db)
 
-    def decide(self,state,allowed):
+    def decide(self,state,allowed, *, finish_probe=True):
         with self.db() as db:
-            db.execute('UPDATE decision_budget SET state=?,allowed=?,probe_end=coalesce(probe_end,?)',(state,int(allowed),time.time()))
+            db.execute('UPDATE decision_budget SET state=?,allowed=?,probe_end=CASE WHEN ? THEN coalesce(probe_end,?) ELSE NULL END',
+                       (state,int(allowed),int(finish_probe),time.time()))
 
     def state(self):
         with self.db() as db:return db.execute('SELECT state,allowed FROM decision_budget').fetchone()
 
-    def _access(self,db,tool=None):
+    def _access(self,db,tool=None, *, stage=None):
         state,allowed=db.execute('SELECT state,allowed FROM decision_budget').fetchone()
+        if stage is not None and state!='closed':
+            if stage not in ('pending_decision','decided'):raise ValueError('invalid_read_stage')
+            state=stage;allowed=True
         remaining=self._remaining(db)
         reason=None
         if state=='closed':reason='reading_task_closed'
@@ -68,28 +87,40 @@ class DecisionReadBudget:
             elif remaining['probe_characters']<=0:reason='probe_character_budget_exhausted: commit with existing evidence'
         return dict(state=state,can_read=reason is None,reason=reason,remaining=remaining)
 
-    def read_access(self,tool=None):
+    def read_access(self,tool=None, *, stage=None):
         """One rule for tool discovery, task receipts and atomic call admission."""
-        with self.db() as db:return self._access(db,tool)
+        with self.db() as db:return self._access(db,tool,stage=stage)
 
-    def reserve(self,tool,purpose,reason,arguments=None):
+    def reserve(self,tool,purpose,reason,arguments=None, *, stage=None, video_policy=None):
         if purpose not in ('targeted','explore') or not isinstance(reason,str) or not reason.strip():
             raise ValueError('reading_purpose_required')
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            access=self._access(db,tool);state=access['state']
+            access=self._access(db,tool,stage=stage);state=access['state']
             if not access['can_read']:raise ValueError(access['reason'])
+            key=None
+            if tool=='watch_video' and video_policy is not None:
+                from reading_budget import ReadBudget
+                key=ReadBudget.video_key(arguments)
+                db.execute('CREATE TABLE IF NOT EXISTS decision_video_polls (call_id INTEGER PRIMARY KEY,video TEXT,at REAL,cap INTEGER,seconds REAL)')
+                n,first=db.execute('SELECT count(*),min(at) FROM decision_video_polls WHERE video=?',(key,)).fetchone()
+                if n>=video_policy['max_calls']:raise ValueError('video_poll_count_exhausted')
+                if first is not None and time.time()>=first+video_policy['timeout_seconds']:raise ValueError('video_poll_time_exhausted')
             if state=='pending_decision':
                 db.execute('UPDATE decision_budget SET probe_at=coalesce(probe_at,?)',(time.time(),))
             row=db.execute('INSERT INTO decision_reads(tool,purpose,reason,stage,at) VALUES (?,?,?,?,?)',
                            (tool,purpose,reason,state,time.time()))
+            if key is not None:
+                db.execute('INSERT INTO decision_video_polls VALUES (?,?,?,?,?)',
+                    (row.lastrowid,key,time.time(),video_policy['max_calls'],video_policy['timeout_seconds']))
             return row.lastrowid
 
-    def timeout(self):
+    def timeout(self, *, stage=None):
         remaining=self.remaining();state,_=self.state()
+        if stage is not None and state!='closed':state=stage
         return min(remaining['read_seconds'],remaining['probe_seconds']) if state=='pending_decision' else remaining['read_seconds']
 
-    def disclose(self,index,material):
+    def disclose(self,index,material, *, deliver=None):
         """Charge only delivered material. Keep JSON, handles and coverage valid."""
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -121,6 +152,10 @@ class DecisionReadBudget:
                         result=None;partial=True
                 elif result is not None and characters(result)>available:
                     result=None;partial=True
+            if deliver is not None:
+                projected=deepcopy(result)
+                result=deliver(result)
+                partial=partial or result!=projected
             size=characters(result) if result is not None else 0
             db.execute('UPDATE decision_reads SET delivered=1,characters=? WHERE id=?',
                        (size if stage=='pending_decision' else 0,index))
@@ -130,5 +165,6 @@ class DecisionReadBudget:
             next_offset=result.get('next_offset')
             if 'next_offset' in result:complete=complete and next_offset is None
             if isinstance(result.get('items'),list):complete=complete and len(result['items'])>=result.get('total',len(result['items']))
+            if isinstance(result.get('candidate_coverage'),dict):complete=complete and result['candidate_coverage'].get('complete',True)
         return result,dict(complete=complete,next_offset=next_offset,
                            material_characters=size,disclosure_limited=partial)

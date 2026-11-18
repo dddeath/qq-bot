@@ -1,5 +1,6 @@
 """Shared execution receipts; native evidence remains owned by each harness."""
 from contextlib import contextmanager
+from copy import deepcopy
 import json
 import hashlib
 import os
@@ -74,7 +75,12 @@ def recorded(directory, *, purpose, harness, native_session_id=None, session_id=
     value = receipt(dict(session_id=session_id, purpose=purpose, harness=harness),
                     str(directory.resolve()), started_at=time.time(),
                     native_session_id=native_session_id, evidence=str(directory.resolve()))
-    value['configuration'] = configuration or {}
+    value['configuration'] = deepcopy(configuration or {})
+    binding=value['configuration'].get('knowledge_application_binding')
+    if binding is not None:
+        if binding['session_id'] != session_id:
+            raise ValueError('application_run_session_mismatch')
+        binding['run_id']=value['run_id']
     value['owner_pid'] = os.getpid()
     with path.open('x', encoding='utf-8') as out:
         json.dump(value, out, ensure_ascii=False)
@@ -112,4 +118,9 @@ def loaded_configuration(*, model, effort, release, snapshot=None, **settings):
         body=json.loads(raw)
         value.update(tool_snapshot=str(path), tool_snapshot_sha256=hashlib.sha256(raw).hexdigest(),
                      bot_ref=body.get('bot_ref'), tool_profile_ref=body.get('tool_profile_ref'))
+        if 'knowledge_application' in body:
+            import sys
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'runtime'))
+            from knowledge_application import snapshot_binding
+            value['knowledge_application_binding']=snapshot_binding(body)
     return value

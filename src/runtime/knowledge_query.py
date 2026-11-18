@@ -270,7 +270,7 @@ LOOKUPS = {'find_knowledge_entries': 'purpose', 'search_knowledge': 'usage',
            'retrieve_knowledge_candidates': 'purpose'}
 ROUTED = set(LOOKUPS) | {'search_knowledge_tags', 'read_knowledge_entry', 'read_knowledge'}
 GUIDE = ('同一消息可同时提出资料和表达查询。每次候选检索按一条查询执行；直接调用 find_knowledge_entries 时用 purpose 指定 information 或 expression。'
-         '改写关键词、仅用 Tag 或展开正文时，用 _reading.query_index 指明原计划的查询序号（从 0 开始）。'
+         '任务含 query_plan 时，改写关键词、仅用 Tag 或展开正文需用 _reading.query_index 指明原计划序号（从 0 开始）；未提供 query_plan 时省略 query_index。'
          '工具按该查询的用途筛候选；_reading.purpose 仍只表示 targeted/explore。')
 
 
@@ -288,8 +288,23 @@ def supports_expression(entry, documents):
     return bool(re.search(r'^surface_form:[ \t]*\S[^\r\n]*', text, re.M))
 
 
-def resolve(tool, args, reading, plan, needs=()):
+def resolve(tool, args, reading, plan, needs=(), *, query_records=None):
     """Bind a planned read before charging or issuing it; never guess between routes."""
+    if query_records is not None:
+        qid=reading.get('query_id');idx=reading.get('query_index')
+        if qid is not None and (not isinstance(qid,str) or not qid.strip()):
+            raise ValueError('invalid_query_id: expected a non-empty string')
+        by_id={row['query_id']:row for row in query_records}
+        if qid is None and idx is None:raise ValueError('query_id_required: use the ID returned for this task')
+        if idx is not None and (type(idx) is not int or not 0<=idx<len(query_records)):
+            raise ValueError('invalid_query_index')
+        if qid is not None and qid not in by_id:raise ValueError('query_not_in_task')
+        row=by_id[qid] if qid is not None else query_records[idx]
+        if idx is not None and row['query_index']!=idx:raise ValueError('query_reference_conflict')
+        reading['query_id']=row['query_id'];reading['query_index']=row['query_index']
+        routed=resolve(tool,args,reading,plan,needs) if tool in ROUTED else None
+        return dict(query_id=row['query_id'],query_index=row['query_index'],purpose=row['purpose'],
+                    text=row['original_query']['text']) if routed is None else dict(routed,query_id=row['query_id'])
     if tool not in ROUTED:
         return None
     qs = (plan or {}).get('queries', [])

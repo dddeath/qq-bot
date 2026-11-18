@@ -33,8 +33,8 @@ def evaluate(subjective, base, limit, draw):
                 branch=branch, retrieve=retrieve)
 
 
-def sample(subjective, configuration):
+def sample(subjective, configuration, *, random_source=None):
     unit_value(subjective, 'subjective_inclination')
-    draw = None if subjective in (0, 1) else secrets.SystemRandom().random()
+    draw = None if subjective in (0, 1) else (random_source or secrets.SystemRandom().random)()
     return evaluate(subjective, configuration['gain_inclination'],
                     configuration['gain_adjustment_limit'], draw)

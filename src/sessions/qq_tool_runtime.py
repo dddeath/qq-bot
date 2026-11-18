@@ -6,8 +6,10 @@ import sys
 
 def validate_snapshot(snapshot):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'runtime'))
-    from knowledge_application import policy
+    from knowledge_application import policy, snapshot_binding
     selected=policy(snapshot.get('knowledge_application'))
+    if 'knowledge_application_binding' in snapshot:
+        snapshot_binding(snapshot)
     from knowledge_overview import decision_entry
     decision_entry(snapshot)
     if selected['enabled'] and selected['strategy']=='gain':
@@ -39,6 +41,10 @@ def server_configs(snapshot, path, *, python, proxy, host_wait=False):
 
 def load_snapshot(path, *, conversation=None, session_id=None):
     snapshot = json.loads(Path(path).read_text(encoding='utf-8'))
+    if 'knowledge_application_binding' in snapshot:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'runtime'))
+        from knowledge_application import snapshot_binding
+        snapshot_binding(snapshot)
     if session_id is not None and snapshot['session_id'] != session_id:
         raise ValueError('tool snapshot session mismatch')
     qq = snapshot.get('qq_tools')

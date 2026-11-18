@@ -81,7 +81,8 @@ class CandidateOverview:
         body = body_of(projected)
         if (tool == 'retrieve_knowledge_candidates' and isinstance(body.get('candidates'), list)
                 and not projected.get('result', {}).get('isError')):
-            pending = trace.task_budget(token.parent).state()[0] == 'pending_decision'
+            record=json.loads(token.read_text(encoding='utf-8'))
+            pending = record.get('query_read_stage',trace.task_budget(token.parent).state()[0]) == 'pending_decision'
             task = json.loads((token.parent/'context.json').read_text(encoding='utf8'))
             plan = task.get('task_context', {}).get('query_plan') or {}
             count = max(1, len(plan.get('queries', []))) if pending else 1
@@ -100,17 +101,7 @@ class CandidateOverview:
                 max_parents=FINAL_LIMIT//count, query_arguments=arguments)
             projected['result'] = {'structuredContent':compact,
                 'content':[{'type':'text','text':json.dumps(compact,ensure_ascii=False)}]}
-        delivered = self.budget.deliver(self.budget.current(), tool, arguments, projected, elapsed)
-        receipt = None
-        for block in delivered.get('result', {}).get('content', []):
-            if block.get('type') == 'text':
-                try: receipt = json.loads(block['text']).get('knowledge_turn_budget', receipt)
-                except (ValueError, AttributeError): pass
-        final = trace.delivery(token, delivered)
-        if receipt and isinstance(final.get('result', {}).get('structuredContent'), dict):
-            final['result']['structuredContent']['knowledge_turn_budget'] = receipt
-            final['result']['content'] = [{'type':'text','text':json.dumps(final['result']['structuredContent'],ensure_ascii=False)}]
-        return final
+        return trace.delivery(token,projected,turn_budget=self.budget,elapsed=elapsed,upstream=response)
 
 
 def prefetch_assessment(result, application, trace, config, read):
@@ -141,12 +132,21 @@ def prefetch_assessment(result, application, trace, config, read):
     try:
         limit = application.context['policy']['decision_probe']['max_calls']
         for i, query in enumerate(queries[:limit]):
-            if not trace.task_budget(folder).read_access('retrieve_knowledge_candidates')['can_read']:
+            query_rows=result.get('queries')
+            if query_rows is not None and (i>=len(query_rows) or query_rows[i]['decision_state']!='pending'):
+                continue
+            if query_rows is not None:
+                from knowledge_decision import query_task,query_read_access
+                selected=query_task(application,result['task_id'])
+                access=query_read_access(application,trace.task_budget(folder),selected,selected['queries'][i],'retrieve_knowledge_candidates')
+            else:access=trace.task_budget(folder).read_access('retrieve_knowledge_candidates')
+            if not access['can_read']:
                 outcome['stop_reason'] = 'probe_budget_exhausted'
                 break
             arguments = dict(purpose=query['purpose'], query=query['text'],
                 _reading=dict(task_id=result['task_id'], purpose='targeted',
                     reason='读取本查询方向的候选概览以供裁决', relation=query['text'], query_index=i))
+            if query_rows is not None:arguments['_reading']['query_id']=query_rows[i]['query_id']
             if query['purpose'] == 'expression':
                 arguments.update(keywords=query['keywords'],need=query['need'])
             value = read('retrieve_knowledge_candidates', arguments)

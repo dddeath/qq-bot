@@ -1,10 +1,12 @@
 """Versioned configuration objects, independent of running processes."""
 import copy
+import hashlib
 import json
 import re
 import time
 from pathlib import Path
 import qq_tools
+import configuration_schema
 
 
 class ControlPlane:
@@ -14,6 +16,7 @@ class ControlPlane:
         self.sessions = sessions
         self.db = sessions.db
         self.db.execute('CREATE TABLE IF NOT EXISTS configurations(kind TEXT, id TEXT, version INTEGER, body TEXT, PRIMARY KEY(kind,id,version))')
+        self.db.execute('CREATE TABLE IF NOT EXISTS configuration_operations(request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result TEXT NOT NULL)')
         self.db.commit()
 
     def get(self, kind, id, version=None):
@@ -27,13 +30,101 @@ class ControlPlane:
     def list(self, kind=None):
         return [self.get(k,i) for k,i in self.db.execute('SELECT DISTINCT kind,id FROM configurations ORDER BY kind,id') if kind is None or k == kind]
 
+    def validate_changes(self, id, *, base_version, changes):
+        if type(base_version) is not int or base_version < 1:
+            raise ValueError('invalid base version')
+        base = self.get('bot', id, base_version)
+        errors = configuration_schema.errors(changes, configuration_schema.BOT_EDIT, partial=True)
+        body = base['body']
+        if not errors:
+            body = configuration_schema.merge(body, changes)
+            errors = configuration_schema.errors(body, configuration_schema.BOT_EDIT,
+                                                 reject_unknown=False)
+        if not errors and body.get('tool_profile'):
+            try:
+                profile = self.dereference(body['tool_profile'])
+                qq_tools.configured(profile['body'], body.get('qq_tools', {}))
+            except ValueError as exc:
+                errors.append({'path': 'tool_profile', 'code': 'invalid_reference', 'message': str(exc)})
+        return dict(schema_version=1, ok=not errors, errors=errors, base_ref=base['ref'],
+                    diff=configuration_schema.diff(base['body'], body) if not errors else [])
+
+    def update(self, id, *, base_version, changes, request_id):
+        """Save a partial Bot edit; leave existing Session bindings untouched."""
+        preview = self.validate_changes(id, base_version=base_version, changes=changes)
+        if not preview['ok']:
+            raise ValueError('invalid configuration changes: '+json.dumps(preview['errors']))
+        body = configuration_schema.merge(self.get('bot', id, base_version)['body'], changes)
+        self._request_key(request_id)
+        return self.put('bot', id, body, expected_version=base_version, request_id=request_id)
+
+    @staticmethod
+    def _request_key(request_id):
+        if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 128:
+            raise ValueError('request_id required (1-128 characters)')
+
+    @staticmethod
+    def _fingerprint(value):
+        raw = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+        return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+    def _replay(self, request_id, payload):
+        self._request_key(request_id)
+        row = self.db.execute('SELECT fingerprint,result FROM configuration_operations WHERE request_id=?',
+                              (request_id,)).fetchone()
+        if row:
+            if row[0] != self._fingerprint(payload):
+                raise ValueError('request_id conflict')
+            return json.loads(row[1])
+
+    def _remember(self, request_id, payload, result):
+        self.db.execute('INSERT INTO configuration_operations VALUES(?,?,?)',
+                        (request_id, self._fingerprint(payload), json.dumps(result, ensure_ascii=False)))
+
+    def binding(self, session_id):
+        session = self.sessions.get(session_id)
+        value = {key: session.get(key) for key in (
+            'session_id','purpose','account_id','group_id','harness','bot_ref','runtime_refs','run_path')}
+        return dict(schema_version=1, **value, revision=self._fingerprint(value))
+
+    def bind_configuration(self, session_id, *, bot_ref, expected_revision, request_id):
+        """CAS the fixed Bot reference, preserving runtime bindings and history."""
+        payload = dict(operation='bind_configuration', session_id=session_id,
+                       bot_ref=bot_ref, expected_revision=expected_revision)
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            replay = self._replay(request_id, payload)
+            if replay is not None:
+                return replay
+            previous = self.binding(session_id)
+            if previous['revision'] != expected_revision:
+                raise ValueError('binding revision conflict')
+            target = self.dereference(bot_ref)
+            if target['kind'] != 'bot' or str(target['body']['account_id']) != previous['account_id']:
+                raise ValueError('bot account mismatch')
+            row = self.db.execute('SELECT body FROM session_configuration WHERE session=?', (session_id,)).fetchone()
+            before = json.loads(row[0]) if row else None
+            after = {**(before or {}), 'bot_ref': copy.deepcopy(bot_ref)}
+            changed = previous['bot_ref'] != bot_ref
+            if changed:
+                self.db.execute('INSERT OR REPLACE INTO session_configuration VALUES(?,?)',
+                                (session_id, json.dumps(after)))
+            result = dict(session_id=session_id, changed=changed, before=before,
+                          after=after if changed else before,
+                          binding=self.binding(session_id), runtime_unchanged=True)
+            self._remember(request_id, payload, result)
+            return result
+
     def dereference(self, ref):
         return self.get(ref['kind'], ref['id'], ref['version'])
 
-    def put(self, kind, id, body, expected_version=0):
+    def put(self, kind, id, body, expected_version=0, *, request_id=None):
         if kind not in self.KINDS or not isinstance(body, dict) or not id:
             raise ValueError('invalid configuration')
         if kind == 'bot':
+            errors = configuration_schema.errors(body, configuration_schema.BOT_EDIT, reject_unknown=False)
+            if errors:
+                raise ValueError('invalid Bot policy: '+json.dumps(errors))
             if not body.get('account_id') or not isinstance(body.get('bindings',{}),dict):
                 raise ValueError('bot account and bindings required')
             if body.get('tool_profile'):
@@ -52,14 +143,27 @@ class ControlPlane:
             qq_tools.configured(self.dereference(body['tool_profile'])['body'], body.get('qq_tools', {}))
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
+            payload = dict(operation='put', kind=kind, id=id, body=body, expected_version=expected_version)
+            if request_id is not None:
+                replay = self._replay(request_id, payload)
+                if replay is not None:
+                    return replay
             row = self.db.execute('SELECT version,body FROM configurations WHERE kind=? AND id=? ORDER BY version DESC LIMIT 1', (kind,id)).fetchone()
-            if row and json.loads(row[1]) == body:
-                return self.get(kind,id)
             current = row[0] if row else 0
+            if request_id is not None and current != expected_version:
+                raise ValueError('configuration version conflict')
+            if row and json.loads(row[1]) == body:
+                result = self.get(kind,id)
+                if request_id is not None:
+                    self._remember(request_id, payload, result)
+                return result
             if current != expected_version:
                 raise ValueError('configuration version conflict')
             self.db.execute('INSERT INTO configurations VALUES(?,?,?,?)',(kind,id,current+1,json.dumps(body,ensure_ascii=False)))
-        return self.get(kind,id)
+            result = self.get(kind,id,current+1)
+            if request_id is not None:
+                self._remember(request_id, payload, result)
+        return result
 
     def inherit_bot(self, id, *, source_bot_ref, account_id, bindings, disabled_tools=None, persona_ref=None):
         source = self.dereference(source_bot_ref)
@@ -216,9 +320,11 @@ class ControlPlane:
     def effective(self, session_id):
         session = self.sessions.get(session_id)
         bot = self.dereference(session['bot_ref'])['body']
-        from knowledge_application import policy as application_policy
-        selected_application = application_policy(bot.get('knowledge_application'))
-        if selected_application['enabled'] and session['harness'] != 'codex':
+        from knowledge_application import policy_binding
+        knowledge = copy.deepcopy(bot.get('knowledge_application', {'enabled':False}))
+        if session.get('purpose') in ('learning','screening'):
+            knowledge = {'enabled':False}
+        if knowledge.get('enabled') and session['harness']!='codex':
             raise ValueError('knowledge_application_harness_not_supported')
         if str(bot['account_id']) != session.get('account_id'):
             raise ValueError('bot account mismatch')
@@ -265,13 +371,14 @@ class ControlPlane:
                     batching=copy.deepcopy(bot.get('batching', {})),
                     screening=copy.deepcopy(bot.get('screening', {'enabled':False})),
                     main_context=copy.deepcopy(bot.get('main_context', {})),
-                    knowledge_application=copy.deepcopy(bot.get('knowledge_application', {'enabled':False})),
+                    knowledge_application=knowledge,
+                    knowledge_application_binding=policy_binding(knowledge),
                     applied=session.get('runtime_refs',{}).get('applied_configuration'))
 
     def export_tools(self, session_id, directory, *, python, proxy):
         effective=self.effective(session_id)
         session=self.sessions.get(session_id)
-        effective.update({key:session.get(key) for key in ('account_id','group_id','harness','model','effort','native_session_id')})
+        effective.update({key:session.get(key) for key in ('account_id','group_id','harness','model','effort','native_session_id','purpose')})
         for name,c in effective['servers'].items():
             if not c.get('command') and not c.get('url'):raise ValueError('stdio or HTTP adapter required: '+name)
         from qq_tool_runtime import validate_snapshot

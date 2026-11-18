@@ -23,19 +23,21 @@ class NativeWebRecorder:
         self.trace = trace
         self.calls = {}
 
-    def reserve(self, task_id, native_tool, native_input, purpose, reason, relation):
+    def reserve(self, task_id, native_tool, native_input, purpose, reason, relation, query_id=None, query_index=None):
         if native_tool not in ('exec', 'web_search'):
             raise ValueError('unsupported_native_read_tool')
         if native_tool == 'exec' and (not isinstance(native_input,str) or not native_input.strip()):
             raise ValueError('native_input_required')
         if native_tool == 'web_search' and (not isinstance(native_input,dict) or not native_input):
             raise ValueError('native_action_required')
+        refs={k:v for k,v in dict(query_id=query_id,query_index=query_index).items() if v is not None}
         path,_ = self.trace.prepare('web_search', {'native_tool':native_tool,'native_input':native_input,
-            '_reading':dict(task_id=task_id,purpose=purpose,reason=reason,relation=relation)})
+            '_reading':dict(task_id=task_id,purpose=purpose,reason=reason,relation=relation,**refs)})
         row=json.loads(path.read_text(encoding='utf-8'))
         if native_tool == 'exec':
             native_input=f'// reading:{task_id}:{row["read_id"]}\n'+native_input
-        return dict(task_id=task_id,read_id=row['read_id'],native_input=native_input,
+        if row.get('query_route',{}).get('query_id'):refs={'query_id':row['query_route']['query_id']}
+        return dict(task_id=task_id,read_id=row['read_id'],native_input=native_input,**refs,
                     budget_remaining=self.trace.remaining(path.parent))
 
     def _bind(self, thread, call_id, path):
@@ -83,10 +85,7 @@ class NativeWebRecorder:
         row=json.loads(path.read_text(encoding='utf-8'))
         if row['result']['status'] not in ('pending', 'missing_output'):return
         if output is None:
-            row['result']={'status':'missing_output','images':[]}
-            row['missing_reason']='native_event_does_not_include_result_content'
-            row['elapsed_seconds']=None
-            write_record(path,row)
+            self._missing(path,row,'native_event_does_not_include_result_content')
         else:
             blocks=output if isinstance(output,list) else [{'type':'text','text':output if isinstance(output,str) else json.dumps(output,ensure_ascii=False)}]
             content=[]
@@ -110,15 +109,22 @@ class NativeWebRecorder:
         row['timing_basis']='tool_start_end_timestamps_unavailable'
         write_record(path,row);self.trace.report(path.parent)
 
+    def _missing(self,path,row,reason):
+        row['result']={'status':'missing_output','images':[]}
+        row['missing_reason']=reason
+        row['elapsed_seconds']=None
+        write_record(path,row)
+        if self.trace.query_context(path.parent) is not None:
+            from knowledge_decision import query_execution
+            query_execution(self.trace.application,path.parent.name,row['query_route']['query_id'],
+                            'failed',reason=reason)
+
     def close(self, task_id):
         folder=self.trace.folder(task_id)
         for path in folder.glob('read-*.json'):
             row=json.loads(path.read_text(encoding='utf-8'))
             if row['result']['status']=='pending' and row['arguments'].get('native_tool'):
-                row['result']={'status':'missing_output','images':[]}
-                row['missing_reason']='no_unambiguous_native_completion'
-                row['elapsed_seconds']=None
-                write_record(path,row)
+                self._missing(path,row,'no_unambiguous_native_completion')
         self.trace.report(folder)
 
 

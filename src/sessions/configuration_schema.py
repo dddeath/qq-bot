@@ -96,6 +96,12 @@ def errors(value, spec, path='', *, partial=False, reject_unknown=True):
         for i, item in enumerate(value):
             result.extend(errors(item, spec['items'], f'{path}.{i}', partial=partial,
                                  reject_unknown=reject_unknown))
+    if path == 'knowledge_application' and not partial and not result:
+        from knowledge_application import policy
+        try:
+            policy(value)
+        except ValueError as exc:
+            result.append({'path': path, 'code': 'invalid_policy', 'message': str(exc)})
     return result
 
 
