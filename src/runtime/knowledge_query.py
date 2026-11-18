@@ -245,9 +245,9 @@ def candidate_schema(schema):
         'need': {'type':'string','default':'','description':'完整表达承接需求；expression 必填非空，information 留空。'}})
     result['required'] = list(dict.fromkeys(result.get('required', [])+['purpose','query']))
     result['allOf'] = [
-        {'if':{'properties':{'purpose':{'const':'expression'}}},'then':{
+        {'if':{'required':['purpose'],'properties':{'purpose':{'const':'expression'}}},'then':{
             'required':['keywords','need'],'properties':{k:{'type':'string','pattern':r'\S'} for k in ('keywords','need')}}},
-        {'if':{'properties':{'purpose':{'const':'information'}}},'then':{
+        {'if':{'required':['purpose'],'properties':{'purpose':{'const':'information'}}},'then':{
             'properties':{k:{'const':''} for k in ('keywords','need')}}}]
     return result
 

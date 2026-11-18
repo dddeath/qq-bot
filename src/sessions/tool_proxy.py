@@ -14,6 +14,31 @@ from host_wait import project_host_response
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'runtime'))
 
 
+def reading_parameter_message(errors):
+    """Report missing fields together, retaining paths and alternative selectors."""
+    from jsonschema import Draft202012Validator
+    details=[]
+    def describe(error, parents=()):
+        parts=(*parents,*map(str,error.absolute_path))
+        path='.'.join(parts)
+        prefix=path+'.' if path else ''
+        if error.validator=='required' and isinstance(error.instance,dict):
+            for key in error.validator_value:
+                if key in error.instance:continue
+                details.append(prefix+key+' is required')
+                child=error.schema.get('properties',{}).get(key,{})
+                if child.get('type')=='object':
+                    for nested in Draft202012Validator(child).iter_errors({}):
+                        describe(nested,(*parts,key))
+        elif error.validator=='anyOf' and all(set(branch)=={'required'} for branch in error.validator_value):
+            options=[' + '.join(prefix+k for k in branch['required']) for branch in error.validator_value]
+            details.append('provide one of: '+' or '.join(options))
+        else:
+            details.append((path+': ' if path else '')+error.message)
+    for error in errors:describe(error)
+    return 'invalid_reading_parameters: '+'; '.join(dict.fromkeys(details))
+
+
 def emit_response(response):
     # Internal diagnostics remain in executor records, never in client delivery.
     from reading_result import model_response
@@ -172,7 +197,8 @@ def main():
             raise ValueError('reading trace requires read-only research tools')
         require_reading_context = config['reading_trace'].get('require_context', True) or bool(application and application.gated)
         policy = snapshot.get('knowledge_application')
-        trace = ResearchTrace.for_servers({**config['reading_trace'], 'knowledge_application': policy},
+        trace = ResearchTrace.for_servers({**config['reading_trace'], 'knowledge_application': policy,
+                                           'candidate_reader_enabled': 'retrieve_knowledge_candidates' in allowed},
                                           snapshot['servers'], index_policy=policy)
         if application:trace.bind_application(application)
         allowed.update(CONTROL_TOOLS)
@@ -229,6 +255,28 @@ def main():
         finally:responses.put('')
     threading.Thread(target=receive_lines,daemon=True).start()
     input_tools={}
+    def validate_read_parameters(params):
+        if params['name'] not in input_tools:
+            discovery_id='host-tool-schema-'+str(time.monotonic_ns())
+            child.stdin.write(json.dumps({'jsonrpc':'2.0','id':discovery_id,'method':'tools/list'})+'\n');child.stdin.flush()
+            end=time.monotonic()+5
+            while True:
+                try:raw=responses.get(timeout=max(.001,end-time.monotonic()))
+                except queue.Empty:raise ValueError('tool_schema_unavailable')
+                if not raw:raise ValueError('tool_schema_unavailable')
+                discovery=json.loads(raw)
+                if discovery.get('id')==discovery_id:
+                    input_tools.update({t['name']:t for t in discovery.get('result',{}).get('tools',[]) if t['name'] in allowed})
+                    break
+                if time.monotonic()>=end:raise ValueError('tool_schema_unavailable')
+        if params['name'] not in input_tools:raise ValueError('tool_schema_unavailable')
+        from jsonschema import Draft202012Validator
+        spec=application.schemas(trace.schemas([input_tools[params['name']]]))[0]['inputSchema']
+        errors=list(Draft202012Validator(spec).iter_errors(params.get('arguments',{})))
+        if errors:
+            if trace.query_mode():raise ValueError(reading_parameter_message(errors))
+            raise ValueError('invalid_reading_parameters: '+errors[0].message)
+
     def execute(request):
         line=json.dumps(request,ensure_ascii=False)+'\n'
         method=request.get('method')
@@ -266,6 +314,17 @@ def main():
                 request['params'] = {**request['params'], 'arguments': arguments}
                 line = json.dumps(request, ensure_ascii=False)+'\n'
             except ValueError as exc:
+                # Routing may reject an incomplete envelope before the normal schema check.
+                # Only describe a read already visible to this session; keep identity/permission errors intact.
+                params=request['params']
+                route=params.get('arguments',{}).get('_reading')
+                code=str(exc).partition(':')[0]
+                missing_route=(code=='query_id_required' or route is None and code=='knowledge_entry_required'
+                               or isinstance(route,dict) and not route.get('task_id') and code=='knowledge_task_not_linked')
+                if (missing_route and stage_tools and trace.query_mode() and params['name'] not in CONTROL_TOOLS
+                        and params['name'] in stage_tools.names()):
+                    try:validate_read_parameters(params)
+                    except ValueError as detail:exc=detail
                 response={'jsonrpc':'2.0','id':request['id'],'result':{'isError':True,
                     'content':[{'type':'text','text':str(exc)}]}}
                 if application_token:response=application.complete(application_token,response,time.monotonic()-started)
@@ -286,24 +345,7 @@ def main():
                     return response
                 if require_reading_context or '_reading' in params.get('arguments', {}):
                     if application and 'decision_probe' in application.context['policy']:
-                        if params['name'] not in input_tools:
-                            discovery_id='host-tool-schema-'+str(time.monotonic_ns())
-                            child.stdin.write(json.dumps({'jsonrpc':'2.0','id':discovery_id,'method':'tools/list'})+'\n');child.stdin.flush()
-                            end=time.monotonic()+5
-                            while True:
-                                try:raw=responses.get(timeout=max(.001,end-time.monotonic()))
-                                except queue.Empty:raise ValueError('tool_schema_unavailable')
-                                if not raw:raise ValueError('tool_schema_unavailable')
-                                discovery=json.loads(raw)
-                                if discovery.get('id')==discovery_id:
-                                    input_tools.update({t['name']:t for t in discovery.get('result',{}).get('tools',[]) if t['name'] in allowed})
-                                    break
-                                if time.monotonic()>=end:raise ValueError('tool_schema_unavailable')
-                        if params['name'] not in input_tools:raise ValueError('tool_schema_unavailable')
-                        from jsonschema import Draft202012Validator
-                        spec=application.schemas(trace.schemas([input_tools[params['name']]]))[0]['inputSchema']
-                        errors=list(Draft202012Validator(spec).iter_errors(params.get('arguments',{})))
-                        if errors:raise ValueError('invalid_reading_parameters: '+errors[0].message)
+                        validate_read_parameters(params)
                     token, arguments = trace.prepare(params['name'], params.get('arguments', {}))
                     request['params'] = {**params, 'arguments': arguments}
                     line = json.dumps(request, ensure_ascii=False)+'\n'

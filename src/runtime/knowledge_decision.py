@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from knowledge_query import GUIDE as ROUTE_GUIDE
 from knowledge_query import QUERY_TEXT_MAX
-from knowledge_query import routing_guidance, validate_contract_schema, query_error
+from knowledge_query import validate_contract_schema, query_error
 import sqlite3
 import time
 import uuid
@@ -123,20 +123,17 @@ def initial_example_guidance(protocol_version=VERSION):
     return text
 
 
+def query_gain_criteria():
+    """Use the two scoring rules from the same authoring asset as first-call query generation."""
+    lines=query_guidance(QUERY_DECISION_VERSION).splitlines()
+    return '\n'.join(line for line in lines if line.startswith(('1. ', '2. ')))
+
+
 def guidance(protocol_version=VERSION):
     if protocol_version == QUERY_DECISION_VERSION:
-        return ('## 知识应用 '+QUERY_DECISION_VERSION+'\n'+query_guidance(protocol_version)+'\n'
-            +initial_example_guidance(protocol_version)+'\n'+routing_guidance(protocol_version)+'\n'
-            '唯一入口为 begin_reading_task。decision_stage=assess 时只提交初始计划、goal 与任务声明，'
-            '不填 query_decisions；commit 才提交逐查询判断，可在首次调用同次提交完整计划与判断。'
-            '首次 commit 每项用 query_index 对应同次计划；已有任务沿用 task_id，改用宿主返回的 query_id。'
-            '同一查询重试或改写沿用首次结果，不重新抽样。_knowledge 只说明原任务、起因与目标消息，'
-            '逐查询依据写在 query_decisions[].expected_gain。无新增查询时两个数组同时为空。'
-            '信息和表达查询各自判断收益，不把一个查询的结果代替另一个。'
-            '读取仅使用宿主已开放的动作和获准 query_id，_reading.purpose 仍为 targeted 或 explore。'
-            'continue_reading 为任务摘要，执行以对应查询的 can_read 和剩余预算为准。'
-            '已有材料可复用，获准读取也可提前收尾；后台与直接读取共用任务预算。'
-            '完成用 finish_reading_task 保存停止原因、结论与实际材料应用。')
+        return ('## 知识应用 '+QUERY_DECISION_VERSION+'\n以当前能给出的回复为参照，分别考虑资料和表达收益：'
+                '哪项事实、条件或机制能让回答更准？哪种说法或典故能接住当前的对象、行为或关系？'
+                '两类需求可以同时成立，也可以都不查。使用 begin_reading_task；已有任务沿用其 task_id 和查询身份。')
     if protocol_version != VERSION:
         raise ValueError('unknown_knowledge_decision_protocol')
     return ('## 知识应用 '+VERSION+'\n'+QUERY_GUIDANCE+'\n'
@@ -165,16 +162,12 @@ def tool_contract(protocol_version=VERSION):
     schema=begin_schema(protocol_version)
     description=TOOL_DESCRIPTION
     if protocol_version == QUERY_DECISION_VERSION:
-        description=(
-            'Create or reuse one reading task for the original messages. assess submits goal, query_plan and '
-            '_knowledge without query_decisions. commit submits independent query_decisions with '
-            'subjective_inclination and expected_gain per query: a first commit uses query_index in its '
-            'query_plan; an existing task uses returned query_id and task_id. Preserve IDs and first '
-            'decisions on retry. Reading permission is returned by the host per query; reuse existing '
-            'materials and finish_reading_task when done. To append a genuinely new need, assess with '
-            'task_id, the full query_plan retaining its original prefix, and context identifying the new '
-            'evidence; commit the new returned IDs separately. Up to four queries share the original budget. '
-            'Inspect runtime_state and can_read before reading.\n'+guidance(protocol_version))
+        description=('创建或复用原消息的知识查阅任务。assess 提交 goal、query_plan、_knowledge，取得查询身份，不提交分数。'
+            '首次直接 commit：同次提交计划，每项用 query_index；已有任务 commit：传 task_id，用返回的 query_id。'
+            '各项在 query_decisions 填 subjective_inclination 和 expected_gain；无查询可为空。'
+            '强依据排除／确认补读收益才给 0／1，否则给中间倾向；它不是正确率或命中率。已有答案、没查过、未命中或预算用尽不单独支持 0。'
+            '同一需求沿用首次裁决；仅开放任务可用 assess 附 task_id、保持原前缀的完整计划及新证据 context 追加需求，最多四项共享预算。'
+            '按返回的逐项许可读取。已关闭的同一任务只返回原收尾。')
     return {'name':'begin_reading_task','description':description,'inputSchema':schema}
 
 
@@ -192,7 +185,7 @@ def begin_schema(protocol_version=VERSION):
         props['query_decisions']['description'] = 'One inclination and evidence per query. First commit uses query_index; an existing task uses query_id. Reuse the first decision on retry.'
         props['task_id'].update(minLength=1,pattern=r'\S')
         props['goal']['pattern']=r'\S'
-        props['decision_stage']['description']='assess obtains query identities and bounded overview without final inclinations; commit supplies per-query decisions. A first commit can include the whole query plan.'
+        props['decision_stage']['description']='assess returns query identities without final inclinations; pre-reading depends on host permission. commit records per-query decisions.'
         result['allOf']=[
             {'if':{'not':{'required':['task_id']}},
              'then':{'required':['goal','query_plan']}},
@@ -415,7 +408,7 @@ def query_execution(app, task_id, query_id, state, *, read_id=None, reason=None,
         db.execute('UPDATE decisions SET body=? WHERE id=?',(json.dumps(selected,ensure_ascii=False),task_id))
 
 
-def query_result(selected, remaining, *, app, ledger):
+def query_result(selected, remaining, *, app, ledger, candidate_reader_enabled=False):
     from knowledge_turn_budget import TurnBudget
     from decision_read_budget import remaining_with_disclosure
     if 'turn_disclosure' not in remaining:
@@ -427,9 +420,10 @@ def query_result(selected, remaining, *, app, ledger):
         public.update(can_read=access['can_read'],read_ids=deepcopy(row.get('read_ids',[])),
                       next_actions=['read'] if access['can_read'] else [])
     active=selected['state']!='closed'
-    actions=(['begin_reading_task'] if any(r['decision_state']=='pending' for r in rows) else [])+['finish_reading_task'] if active else []
+    actions=(['begin_reading_task'] if selected['state']=='pending_decision' else [])+['finish_reading_task'] if active else []
     if active and any(r['can_read'] for r in rows):actions.insert(0,'read')
-    parameters={**selected['task_arguments'],'query_results':rows}
+    parameters={**selected['task_arguments'],'query_results':rows,'task_id':selected['task_id'],
+                '_knowledge':{k:selected[k] for k in ('action','trigger','target_event_ids','objective','expected_gain')}}
     result={'protocol_version':QUERY_DECISION_VERSION,'task_id':selected['task_id'],
             'decision_id':selected.get('decision_id'),'state':selected['state'],
             'target_event_ids':deepcopy(selected['target_event_ids']),
@@ -439,6 +433,21 @@ def query_result(selected, remaining, *, app, ledger):
             'continue_reading':any(r['can_read'] for r in rows),'runtime_state':'ready',
             'budget_remaining':remaining,'next_actions':actions}
     result['execution_prompt']=execution_prompt(selected['state'],remaining,parameters,{'next_actions':actions},protocol_version=QUERY_DECISION_VERSION)
+    if candidate_reader_enabled:
+        examples=[]
+        for public,row in zip(rows,selected['queries']):
+            if not public['can_read'] or row['decision_state']!='selected':
+                continue
+            query=row['original_query']
+            arguments={'purpose':query['purpose'],'query':query['text'],
+                       **{k:query[k] for k in ('keywords','need') if k in query},
+                       '_reading':{'task_id':selected['task_id'],'query_id':row['query_id'],
+                                   'purpose':'targeted','reason':'查找与「'+query['text']+'」相关的材料',
+                                   'relation':row['expected_gain']}}
+            examples.append(json.dumps({'name':'retrieve_knowledge_candidates','arguments':arguments},
+                                       ensure_ascii=False,separators=(',',':')))
+        if examples:
+            result['execution_prompt']+='\n如仍需查阅，可按对应查询调用；reason 说明这一步查什么，relation 说明它怎样帮助原问题。按实际目的填写，不必逐项执行。\n'+'\n'.join(examples)
     return result
 
 
@@ -505,9 +514,14 @@ def intercept_queries(app, db, call, selected, trace):
         ledger.decide('closed',False)
         db.execute('UPDATE decisions SET body=? WHERE id=?',(json.dumps(selected,ensure_ascii=False),ref))
         db.commit();db.execute('BEGIN IMMEDIATE')
-    remaining=completion['budget_remaining'] if call[0]=='finish_reading_task' else ledger.remaining()
-    result=query_result(selected,remaining,app=app,ledger=ledger);result['reused']=saved.get('reused',False)
-    if call[0]=='finish_reading_task':
+    closed=selected['state']=='closed'
+    if closed and call[0]!='finish_reading_task':
+        completion=json.loads((folder/'completion.json').read_text(encoding='utf-8'))
+    remaining=completion['budget_remaining'] if closed else ledger.remaining()
+    result=query_result(selected,remaining,app=app,ledger=ledger,
+                        candidate_reader_enabled=trace.config.get('candidate_reader_enabled',False))
+    result['reused']=saved.get('reused',False)
+    if closed:
         result.update({key:completion[key] for key in ('stop_reason','reason','conclusion')})
         result['exhausted_dimensions']=completion.get('exhausted_dimensions',[])
     from research_trace import write_record
@@ -519,6 +533,11 @@ def intercept_queries(app, db, call, selected, trace):
     context['task_context']['query_plan']=deepcopy(selected['task_arguments']['query_plan'])
     write_record(folder/'context.json',context)
     trace.report(folder)
+    if closed:
+        # The full query projection stays in the trace; a closed task has no reading instructions.
+        return {key:result[key] for key in (
+            'protocol_version','task_id','decision_id','state','continue_reading','next_actions','reused',
+            'stop_reason','reason','conclusion','exhausted_dimensions','budget_remaining')}
     return result
 
 
@@ -610,15 +629,28 @@ def query_execution_view(state, remaining, parameters, access=None):
 
 def execution_prompt(state, remaining, parameters, access=None, *, protocol_version=VERSION):
     if protocol_version == QUERY_DECISION_VERSION:
-        view=query_execution_view(state,remaining,parameters,access)
-        return (guidance(protocol_version)+'\n当前任务状态：'+str(state)+
-            '\n原始目标：'+view['goal']+
-            '\n本次需求与初始查询：'+json.dumps(view['query_plan'],ensure_ascii=False,separators=(',',':'))+
-            '\n逐查询状态：'+json.dumps(view['queries'],ensure_ascii=False,separators=(',',':'))+
-            '\n当前可执行动作：'+json.dumps(view['next_actions'],ensure_ascii=False,separators=(',',':'))+
-            '\n剩余预算：'+json.dumps(view['budget_remaining'],ensure_ascii=False,separators=(',',':'))+
-            '\n追加读取前检查该查询许可、total_calls、read_seconds 和 turn_disclosure.remaining（本轮文本估算额度）。'
-            '任一读取预算用尽时停止补读，完成裁决后用 budget_exhausted 记录收尾。')
+        if state=='closed':
+            return '任务已关闭，沿用已记录的结论。'
+        rows=parameters.get('query_results',[])
+        if state=='pending_decision':
+            if 'task_id' not in parameters:
+                return '依据 begin_reading_task 返回的查询身份提交裁决。'
+            pending=[r for r in rows if r['decision_state']=='pending']
+            compact=lambda v:json.dumps(v,ensure_ascii=False,separators=(',',':'))
+            # Unquoted symbols denote model-supplied values, not suggested scores.
+            declarations=','.join('{"query_id":'+compact(row['query_id'])+',"subjective_inclination":分数'+str(i)+
+                ',"expected_gain":依据'+str(i)+'}' for i,row in enumerate(pending,1))
+            shape=('{"decision_stage":"commit","task_id":'+compact(parameters['task_id'])+',"_knowledge":'+
+                compact(parameters['_knowledge'])+',"query_decisions":['+declarations+']}')
+            hint=(query_gain_criteria()+'\n以下为已有任务 commit 的参数形状：分数填本项数值，依据填本项理由字符串。'
+                  if pending else '没有待评分的查询，以空数组提交。')
+            if any(r['can_read'] for r in rows):
+                hint+=' 如需查阅，仅使用当前许可的查询与工具；已读材料可复用。'
+            return hint+' 裁决前若主动关闭，仅可用 cancelled 取消。\nbegin_reading_task：'+shape
+        if any(r['can_read'] for r in rows):
+            return ('按需读取 can_read=true 的查询；检查 budget_remaining 的 total_calls、read_seconds 和 turn_disclosure.remaining。'
+                    '不必用满额度；完成后用 finish_reading_task 记录停止理由、查到什么及仍未知什么。')
+        return '当前没有获准且仍可读取的查询。用 finish_reading_task 按实际原因收尾。'
     if protocol_version != VERSION:
         raise ValueError('unknown_knowledge_decision_protocol')
     actions=next_actions(access) if access else []
