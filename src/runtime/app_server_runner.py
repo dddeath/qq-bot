@@ -70,7 +70,7 @@ class EventSession:
 
     def run_turn(self, event):
         if self.research_links:
-            event = self.research_links.register(event)
+            event = self.research_links.register(event, self.knowledge_application)
         if self.knowledge_budget:
             turn_id=uuid.uuid4().hex
             self.knowledge_budget.begin(turn_id, self.knowledge_limit)
@@ -229,7 +229,8 @@ def run_context_chat(run, thread, *, policy, tulpa_session, conversation, activa
             def record_run(item):
                 with (run/'background-runs.jsonl').open('a', encoding='utf-8') as out:
                     out.write(json.dumps(item, ensure_ascii=False)+'\n')
-            wake = NativeCompletions(home/'sessions', thread, record_run=record_run)
+            wake = NativeCompletions(home/'sessions', thread, record_run=record_run,
+                track_report_reads=bool(application and application.context['policy'].get('decision_granularity')=='query'))
             while True:
                 background = wake()
                 body, blocks = (background, None) if background else upstream(dict(loop.arguments, timeout_seconds=10))

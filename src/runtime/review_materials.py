@@ -75,9 +75,13 @@ class ReviewMaterials:
                         material(label + '/' + key, label, value)
                 for i, read in enumerate(report.get('reads', []), 1):
                     name = f'{label}/reads/{i:03d}'
-                    material(name, label + '/reads', read, dict(read_id=read.get('read_id', i),
+                    summary = dict(read_id=read.get('read_id', i),
                         tool=read.get('tool') or read.get('action', {}).get('kind'),
-                        purpose=read.get('action', {}).get('purpose'), status=read.get('result', {}).get('status')))
+                        purpose=read.get('action', {}).get('purpose'), status=read.get('result', {}).get('status'))
+                    if read.get('query_read_stage'):
+                        summary['query_read_stage'] = read['query_read_stage']
+                        summary['query_id'] = (read.get('query_route') or {}).get('query_id')
+                    material(name, label + '/reads', read, summary)
                     for n, image in enumerate(read.get('result', {}).get('images', []), 1):
                         source = Path(image.get('path', ''))
                         entry = dict(id=f'{name}/image/{n}', material_id=name, source=image,

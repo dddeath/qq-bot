@@ -117,7 +117,7 @@ class NativeWebRecorder:
         if self.trace.query_context(path.parent) is not None:
             from knowledge_decision import query_execution
             query_execution(self.trace.application,path.parent.name,row['query_route']['query_id'],
-                            'failed',reason=reason)
+                            'failed',reason=reason,read_stage=row.get('query_read_stage'))
 
     def close(self, task_id):
         folder=self.trace.folder(task_id)

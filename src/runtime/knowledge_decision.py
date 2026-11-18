@@ -398,21 +398,28 @@ def query_read_access(app, ledger, selected, row, tool=None):
     return dict(access,stage=stage,can_read=reason is None,reason=reason)
 
 
-def query_execution(app, task_id, query_id, state, *, read_id=None, reason=None):
+def query_execution(app, task_id, query_id, state, *, read_id=None, reason=None, read_stage=None):
+    # A pre-read keeps its trace link and its own outcome. It is not
+    # post-decision execution, even if the decision changed while it ran.
+    pre_read = read_stage == 'pending_decision'
+    if pre_read and read_id is None:
+        return
     with closing(sqlite3.connect(app.path,timeout=10)) as db, db:
         db.execute('BEGIN IMMEDIATE')
         selected=json.loads(db.execute('SELECT body FROM decisions WHERE id=?',(task_id,)).fetchone()[0])
         row=next(q for q in selected['queries'] if q['query_id']==query_id)
-        row['execution_state']=state
+        if not pre_read:
+            row['execution_state']=state
+            if reason is not None:row['execution_reason']=reason
         if read_id is not None and read_id not in row.setdefault('trace_read_ids',[]):row['trace_read_ids'].append(read_id)
-        if reason is not None:row['execution_reason']=reason
         db.execute('UPDATE decisions SET body=? WHERE id=?',(json.dumps(selected,ensure_ascii=False),task_id))
 
 
 def query_result(selected, remaining, *, app, ledger):
     from knowledge_turn_budget import TurnBudget
     from decision_read_budget import remaining_with_disclosure
-    remaining=remaining_with_disclosure(remaining,TurnBudget(app.context['budget_path']))
+    if 'turn_disclosure' not in remaining:
+        remaining=remaining_with_disclosure(remaining,TurnBudget(app.context['budget_path']))
     rows=[{key:deepcopy(row[key]) for key in ('query_id','query_index','purpose','decision_state','execution_state')}
           | {'can_read':False,'read_ids':[],'next_actions':[]} for row in selected['queries']]
     for public,row in zip(rows,selected['queries']):
@@ -488,13 +495,19 @@ def intercept_queries(app, db, call, selected, trace):
         db.execute('BEGIN IMMEDIATE')
         selected=json.loads(db.execute('SELECT body FROM decisions WHERE id=?',(ref,)).fetchone()[0])
         selected['state']='closed'
+        completion=json.loads((folder/'completion.json').read_text(encoding='utf-8'))
+        exhausted=completion.get('exhausted_dimensions',[]) if completion['stop_reason']=='budget_exhausted' else []
         for row in selected['queries']:
-            if row['decision_state'] in ('selected','pending') and row['execution_state']=='not_started':row['execution_state']='cancelled'
+            if row['execution_state']=='not_started' and row['decision_state'] in ('selected','pending'):
+                if exhausted and row['decision_state']=='selected':
+                    row.update(execution_state='budget_blocked',execution_reason='budget_exhausted: '+', '.join(exhausted))
+                else:row['execution_state']='cancelled'
+        ledger.decide('closed',False)
         db.execute('UPDATE decisions SET body=? WHERE id=?',(json.dumps(selected,ensure_ascii=False),ref))
         db.commit();db.execute('BEGIN IMMEDIATE')
-    result=query_result(selected,ledger.remaining(),app=app,ledger=ledger);result['reused']=saved.get('reused',False)
+    remaining=completion['budget_remaining'] if call[0]=='finish_reading_task' else ledger.remaining()
+    result=query_result(selected,remaining,app=app,ledger=ledger);result['reused']=saved.get('reused',False)
     if call[0]=='finish_reading_task':
-        completion=json.loads((folder/'completion.json').read_text(encoding='utf-8'))
         result.update({key:completion[key] for key in ('stop_reason','reason','conclusion')})
         result['exhausted_dimensions']=completion.get('exhausted_dimensions',[])
     from research_trace import write_record

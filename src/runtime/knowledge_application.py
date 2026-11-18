@@ -244,6 +244,24 @@ class Application:
     def gated(self):
         return self.context['policy']['strategy'] == 'gain'
 
+    def report_source_query(self, receipts):
+        """Resolve this child turn's successful MCP receipts against this application's ledger."""
+        if not isinstance(receipts,(tuple,list,set)):return None
+        routes=set()
+        with closing(sqlite3.connect(self.path)) as db:
+            for pair in receipts:
+                if not isinstance(pair,(tuple,list)) or len(pair)!=2 or not all(isinstance(x,str) and x for x in pair):return None
+                tool,token=pair
+                found=db.execute('SELECT arguments,refs,observation FROM calls WHERE id=? AND tool=?',(token,tool)).fetchone()
+                if not found or not found[2]:return None
+                observation=json.loads(found[2]);reading=json.loads(found[0])['upstream'].get('_reading') or {}
+                task,query=reading.get('task_id'),reading.get('query_id')
+                if not task or not query or observation.get('status')!='ok' or observation.get('read_id')!=token or json.loads(found[1])!=[task]:return None
+                routes.add((task,query))
+        if len(routes)==1:
+            task,query=routes.pop()
+            return dict(task_id=task,query_id=query)
+
     def schemas(self, tools):
         from knowledge_tools import ALL_TOOLS
         names = ALL_TOOLS | {'begin_reading_task','plan_chat_reply','read_research_report'}
@@ -263,6 +281,12 @@ class Application:
                     continue  # Task reads use _reading; judgment belongs to the two entry tools.
                 envelope = envelope_schema()
                 if self.gated and tool['name']=='read_research_report':
+                    if self.context['policy'].get('decision_granularity')=='query':
+                        tool['inputSchema']['properties']['_reading']={'type':'object','properties':{
+                            **{k:{'type':'string','minLength':1} for k in ('task_id','query_id','reason','relation')},
+                            'purpose':{'enum':['targeted','explore']}},'required':['task_id','query_id','purpose','reason','relation']}
+                        tool['description']+=' 新页须用报告的 source_query 填写 _reading，说明 purpose、reason、relation；只展开已返回的 next.offset，页面在 material。已交付页可复读；无可核对来源时仅复用预览。'
+                        continue
                     envelope={'type':'object','properties':{
                         'decision_ids':envelope['properties']['decision_ids']},
                         'required':['decision_ids'],'additionalProperties':False}

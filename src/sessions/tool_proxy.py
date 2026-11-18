@@ -50,6 +50,10 @@ def http_proxy(config, *, host_wait=False, research_links=None, application=None
         refs = []
         application_token = None
         started = time.monotonic()
+        if (research_links and application and application.gated and application.context['policy'].get('decision_granularity')=='query'
+                and method=='tools/call' and params.get('name')=='read_research_report'):
+            emit_response(research_links.query_page(application,request.get('id'),params.get('arguments',{})))
+            continue
         if application and method == 'tools/call' and params.get('name') in allowed | ({'read_research_report'} if research_links else set()):
             try:
                 application_token, arguments = application.prepare(params['name'], params.get('arguments', {}))

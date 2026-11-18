@@ -39,9 +39,10 @@ def wait_for_event(upstream, arguments, wake, *, max_wait_seconds=3600,
 
 class NativeCompletions:
     """Tail only children of this native thread; do not replay historical results."""
-    def __init__(self, root, thread, record_run=None):
+    def __init__(self, root, thread, record_run=None, *, track_report_reads=False):
         self.root, self.thread = root, thread
         self.record_run = record_run
+        self.track_report_reads=track_report_reads
         self.files = {}
         self._scan(baseline=True)
 
@@ -82,7 +83,7 @@ class NativeCompletions:
                     if spawn.get('parent_thread_id') != self.thread:
                         self.files[path] = None
                         continue
-                    self.files[path] = [meta.get('id'), path.stat().st_size if baseline else f.tell(), None]
+                    self.files[path] = [meta.get('id'), path.stat().st_size if baseline else f.tell(), None, {}, set()]
             state = self.files[path]
             if state is None:
                 continue
@@ -97,7 +98,11 @@ class NativeCompletions:
                     payload = row.get('payload', {})
                     if row.get('type') == 'event_msg' and payload.get('type') == 'task_started':
                         state[2] = row.get('timestamp')
+                        state[3].clear();state[4].clear()
                         self._record(state,path,'running',row.get('timestamp'),payload)
+                    if self.track_report_reads and state[2]:
+                        from research_links import capture_read_receipt
+                        capture_read_receipt(row,state[3],state[4])
                     if row.get('type') == 'event_msg' and payload.get('type') in ('task_complete', 'turn_aborted'):
                         from datetime import datetime
                         elapsed = None
@@ -109,7 +114,8 @@ class NativeCompletions:
                                 pass
                         self._record(state,path,'succeeded' if payload['type']=='task_complete' else 'cancelled',row.get('timestamp'),payload)
                         results.append({'agent_id': state[0], 'result': payload, 'timestamp': row.get('timestamp'),
-                                        'started_at': state[2], 'elapsed_seconds': elapsed})
+                                        'started_at': state[2], 'elapsed_seconds': elapsed,
+                                        **({'_report_read_receipts':sorted(state[4])} if state[2] and state[4] else {})})
                         state[2] = None
         return {'event': 'background_results', 'results': results, 'messages': []} if results else None
 

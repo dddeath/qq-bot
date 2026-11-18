@@ -3,6 +3,7 @@ import asyncio
 import base64
 import datetime as dt
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -247,7 +248,8 @@ class ResearchTrace:
             from knowledge_turn_budget import TurnBudget
             record['query_read_stage']=access['stage']
             record['delivery_turn_id']=TurnBudget(self.application.context['budget_path']).current()
-            query_execution(self.application,folder.name,route['query_id'],'running',read_id=str(index))
+            query_execution(self.application,folder.name,route['query_id'],'running',
+                            read_id=str(index),read_stage=record['query_read_stage'])
         if hasattr(ledger,'state'):record['decision_state']=ledger.state()[0]
         path = folder / f'read-{index:03d}.json'
         write_record(path, record)
@@ -278,7 +280,8 @@ class ResearchTrace:
         if self.query_context(path.parent) is not None:
             from knowledge_decision import query_execution
             query_execution(self.application,path.parent.name,record['query_route']['query_id'],
-                            'failed' if record['result']['status']=='error' else 'completed',read_id=str(record['read_id']))
+                            'failed' if record['result']['status']=='error' else 'completed',
+                            read_id=str(record['read_id']),read_stage=record.get('query_read_stage'))
         record.update(finished_at=time.time(), elapsed_seconds=elapsed,
                       budget_remaining=self.remaining(path.parent))
         write_record(path, record)
@@ -400,7 +403,8 @@ class ResearchTrace:
                     value['status']='error'
                 state=('budget_blocked' if error and ('budget' in error or 'turn_changed' in error or 'does_not_fit' in error) else
                        'failed' if error else 'completed')
-                query_execution(self.application,path.parent.name,value['query_id'],state,reason=error)
+                query_execution(self.application,path.parent.name,value['query_id'],state,
+                                reason=error,read_stage=record.get('query_read_stage'))
                 response['result']['content'][0]['text']=json.dumps(value,ensure_ascii=False)
             record['disclosure']=coverage
             write_record(path,record);self.record_delivery(path,response)
@@ -453,10 +457,13 @@ class ResearchTrace:
 
     def finish(self, task_id, stop_reason, reason, conclusion, *, basis='model_declared'):
         folder = self.folder(task_id)
+        destination = folder / 'completion.json'
+        if destination.exists():
+            return self.report(folder)
         if not all(isinstance(x, str) and x.strip() for x in (stop_reason, reason, conclusion)):
             raise ValueError('reading_completion_required')
-        if any(json.loads(p.read_text(encoding='utf-8'))['result']['status'] == 'pending'
-               for p in folder.glob('read-*.json')):
+        reads=list(folder.glob('read-*.json'))
+        if any(json.loads(p.read_text(encoding='utf-8'))['result']['status'] == 'pending' for p in reads):
             raise ValueError('reading_calls_pending')
         if basis == 'model_declared' and stop_reason not in ('sufficient','budget_exhausted','no_readable_material','cancelled'):
             raise ValueError('invalid_stop_reason')
@@ -469,12 +476,20 @@ class ResearchTrace:
         exhausted=bool(dimensions) if 'total_calls' in remaining else reading_budget_exhausted(remaining)
         if stop_reason == 'budget_exhausted' and not exhausted:
             raise ValueError('budget_not_exhausted: '+json.dumps(remaining))
-        completion = dict(stop_reason=stop_reason, reason=reason, conclusion=conclusion,
+        completion = dict(stop_reason=stop_reason, reason=reason, conclusion=conclusion, read_count=len(reads),
                           basis=basis, budget_remaining=remaining,
                           timestamp=time.time())
         if self.query_mode():completion['exhausted_dimensions']=dimensions
-        with (folder / 'completion.json').open('x', encoding='utf-8') as out:
-            json.dump(completion, out, ensure_ascii=False)
+        # Publish a complete JSON value exactly once across independent processes.
+        staging = folder / ('.' + uuid.uuid4().hex + '.tmp')
+        try:
+            staging.write_text(json.dumps(completion, ensure_ascii=False), encoding='utf-8')
+            try:
+                os.link(staging, destination)
+            except FileExistsError:
+                return self.report(folder)
+        finally:
+            staging.unlink(missing_ok=True)
         if hasattr(ledger,'decide'):
             ledger.decide('closed',False)
             decision_path=folder/'decision.json'
@@ -625,7 +640,8 @@ class ResearchTrace:
         sessions=self.config.get('native_sessions_directory')
         if not sessions and os.environ.get('CODEX_HOME'):
             sessions=str(Path(os.environ['CODEX_HOME'])/'sessions')
-        if sessions:sync_native_reads(self,arguments['task_id'],sessions)
+        if sessions and not (self.folder(arguments['task_id'])/'completion.json').exists():
+            sync_native_reads(self,arguments['task_id'],sessions)
         try:
             report = self.finish(**arguments)
         except ValueError as exc:
@@ -635,4 +651,4 @@ class ResearchTrace:
             self.report(folder)
             raise
         return {'recorded': True, 'stop_reason': report['stop_reason'],
-                'reads': len(report['reads']), 'budget_remaining': report['completion']['budget_remaining']}
+                  'reads': report['completion'].get('read_count',len(report['reads'])), 'budget_remaining': report['completion']['budget_remaining']}
