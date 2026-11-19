@@ -21,6 +21,13 @@ def catalog_documents(knowledge_root):
     return json.loads(manifest.read_text(encoding='utf-8-sig'))['documents'] if manifest and manifest.is_file() else {}
 
 
+class EntryStateError(ValueError):
+    """Caller-visible recovery evidence, populated only after a collection grant check."""
+    def __init__(self, code, **details):
+        super().__init__(code)
+        self.details = details
+
+
 class EntryStore:
     def __init__(self, path, collections, documents=None, publication=None):
         self.path = Path(path)
@@ -73,6 +80,8 @@ class EntryStore:
             data = self._load()
             before = copy.deepcopy(data)
             result = action(data)
+            if data == before and expected_sha256 is None:
+                return {**result, 'write_outcome': 'unchanged'}
             if data != before:
                 if self.publication is not None:
                     from knowledge_publication import KEY
@@ -102,7 +111,10 @@ class EntryStore:
     @staticmethod
     def _revision(e, revision):
         if e['revision'] != revision:
-            raise ValueError('revision_conflict')
+            details = dict(entry_id=e['id'], current_revision=e['revision'], status=e['status'])
+            if e.get('merged_into'):
+                details['merged_into'] = e['merged_into']
+            raise EntryStateError('revision_conflict', **details)
 
     @staticmethod
     def _strings(items):
@@ -116,6 +128,14 @@ class EntryStore:
             raise ValueError('unknown_tag')
         return tags
 
+    def _maintenance_tags(self, data):
+        # Unused Tags have no active entry to establish scope. A recorded grant
+        # set is visible only to a maintainer holding all of those grants.
+        registered = {key for key, grants in data.get('tag_registration_grants', {}).items()
+                      if grants and set(grants) <= self.collections}
+        return registered | {tag for e in data['entries'].values()
+                             if e['collection'] in self.collections for tag in e['tags']}
+
     def put_tag(self, tag_id, name, category, aliases, description):
         if category not in ('领域', '主题', '对象', '需求'):
             raise ValueError('invalid_tag_category')
@@ -125,7 +145,10 @@ class EntryStore:
                    aliases=self._strings(aliases), description=description)
         def apply(data):
             if tag_id in data['tags'] and data['tags'][tag_id] != tag:
-                raise ValueError('tag_exists')
+                details = {'current_tag': data['tags'][tag_id]} if tag_id in self._maintenance_tags(data) else {}
+                raise EntryStateError('tag_exists', **details)
+            if tag_id not in data['tags']:
+                data.setdefault('tag_registration_grants', {})[tag_id] = sorted(self.collections)
             data['tags'][tag_id] = tag
             return tag
         return self._write(apply)
@@ -160,6 +183,7 @@ class EntryStore:
             self._revision(e, base_revision)
             if e['status'] != 'active':
                 raise ValueError('entry_inactive')
+            original = e.copy()
             for field, value in changes.items():
                 if field in ('title', 'content'):
                     if not isinstance(value, str) or not value.strip():
@@ -170,6 +194,8 @@ class EntryStore:
                     value = self._strings(value)
                 e[field] = value
             e['sources'] = list(dict.fromkeys(e['sources'] + self._strings(add_sources)))
+            if e == original:
+                return dict(id=e['id'], revision=e['revision'], status=e['status'])
             return self._save_revision(data, e, reason)
         return self._write(apply)
 
@@ -188,9 +214,13 @@ class EntryStore:
             e, target = self._entry(data, entry_id), self._entry(data, target_id)
             self._revision(e, base_revision)
             self._revision(target, target_revision)
-            if (entry_id == target_id or e['collection'] != target['collection']
-                    or e['status'] != 'active' or target['status'] != 'active' or not reason.strip()):
-                raise ValueError('invalid_merge')
+            for fails, constraint in ((entry_id == target_id, 'same_entry'),
+                                      (e['collection'] != target['collection'], 'different_collections'),
+                                      (e['status'] != 'active', 'inactive_source'),
+                                      (target['status'] != 'active', 'inactive_target'),
+                                      (not reason.strip(), 'empty_reason')):
+                if fails:
+                    raise EntryStateError('invalid_merge', constraint=constraint)
             target['sources'] = list(dict.fromkeys(target['sources'] + e['sources']))
             target['tags'] = list(dict.fromkeys(target['tags'] + e['tags']))
             target_result = self._save_revision(data, target, reason)
@@ -199,7 +229,7 @@ class EntryStore:
             return dict(source=result, target=target_result)
         return self._write(apply)
 
-    def search_tags(self, query, limit=6):
+    def search_tags(self, query, limit=6, *, maintenance=False):
         data = self._load()
         entries = [e for e in data['entries'].values()
                    if e['collection'] in self.collections and e['status'] == 'active']
@@ -209,15 +239,20 @@ class EntryStore:
                 counts[tag] = counts.get(tag, 0) + 1
         terms = re.findall(r'\S+', query.casefold())
         items = []
+        visible = set(counts)
+        if maintenance:
+            visible.update(self._maintenance_tags(data))
         for tag in data['tags'].values():
-            if tag['id'] not in counts:
+            if tag['id'] not in visible:
                 continue
             names = [tag['name'], *tag['aliases']]
             hay = ' '.join([*names, tag['description']]).casefold()
             score = sum(1 for t in terms if t in hay)
             score += sum(3 for name in names if name.casefold() in query.casefold())
+            if maintenance and tag['id'].casefold() == query.strip().casefold():
+                score += 4
             if score:
-                items.append(dict(tag, entry_count=counts[tag['id']], score=score))
+                items.append(dict(tag, entry_count=counts.get(tag['id'], 0), score=score))
         items.sort(key=lambda x: (-x['score'], x['id']))
         return dict(items=items[:max(1, min(limit, 20))], total=len(items))
 

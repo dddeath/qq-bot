@@ -238,9 +238,10 @@ def candidate_schema(schema):
     result['additionalProperties'] = False
     properties = result.setdefault('properties', {})
     properties.update({
-        'purpose': {'type':'string', 'enum':list(PURPOSES)},
+        'purpose': {'type':'string', 'enum':list(PURPOSES),
+                    'description':'information 查事实、机制或资料；expression 查可迁移的表达关系与接话方式。'},
         'query': {'type':'string','minLength':1,'maxLength':QUERY_TEXT_MAX,'pattern':r'\S',
-                  'description':'主题词或原话场景线索，1至40字。'},
+                  'description':f'1 至 {QUERY_TEXT_MAX} 个 Unicode 码点，空格、标点也计入，不得全为空白。超长会被拒绝；保留实体和关系，缩短本查询后再提交。information 用于词法与正文向量检索；expression 用作线索查询。'},
         'keywords': {'type':'string','default':'','description':'表达关系关键词；expression 必填非空，information 留空。'},
         'need': {'type':'string','default':'','description':'完整表达承接需求；expression 必填非空，information 留空。'}})
     result['required'] = list(dict.fromkeys(result.get('required', [])+['purpose','query']))
